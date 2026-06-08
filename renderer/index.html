@@ -1,0 +1,615 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'self' blob: data:;
+             script-src 'self' 'unsafe-inline';
+             style-src 'self' 'unsafe-inline';
+             media-src * blob: data:;
+             connect-src * blob: data:" />
+  <title>AGPlayer</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+<!-- ═══════════════════════════════ HEADER ═══════════════════════════════════ -->
+<header class="app-header">
+  <div class="header-left">
+    <span class="app-logo">▶</span>
+    <div class="app-title-group">
+      <span class="app-title">AGPlayer</span>
+      <span class="app-subtitle">HEVC · CMAF · DRM</span>
+    </div>
+  </div>
+  <div class="header-right">
+    <span id="wv-badge"   class="badge badge--off" title="Widevine CDM status">WV –</span>
+    <span id="hevc-badge" class="badge badge--off" title="HEVC decode capability">HEVC –</span>
+    <button class="btn-header" id="analyzeBtn" title="Stream Analysis Tool">⊹ Analyze</button>
+    <button class="btn-about"  id="aboutBtn"   title="About AGPlayer">?</button>
+    <div class="wc-sep"></div>
+    <button class="wc-btn wc-min" id="wcMin"   title="Minimize">&#xE921;</button>
+    <button class="wc-btn wc-max" id="wcMax"   title="Maximize">&#xE922;</button>
+    <button class="wc-btn wc-close" id="wcClose" title="Close">&#xE8BB;</button>
+  </div>
+</header>
+
+<!-- ═══════════════════════════════ MAIN LAYOUT ══════════════════════════════ -->
+<div class="app-body">
+
+  <!-- ── LEFT PANEL: Config ─────────────────────────────────────────────── -->
+  <aside class="config-panel" id="configPanel">
+    <section class="config-section">
+      <h3 class="section-title">Source</h3>
+
+      <label class="field-label">Stream URL (HLS / DASH)</label>
+      <div class="url-row">
+        <input id="streamUrl" class="input" type="url"
+               placeholder="https://…/stream.m3u8" spellcheck="false" />
+        <button class="btn btn--icon" id="browseBtn" title="Open local file">📂</button>
+      </div>
+
+      <div class="preset-row">
+        <label class="field-label">Test Streams</label>
+        <select id="presetSelect" class="input">
+          <option value="">— choose a test stream —</option>
+
+          <optgroup label="HLS — Clear">
+            <option value="https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8">Mux · Big Buck Bunny (multi-bitrate)</option>
+            <option value="https://storage.googleapis.com/shaka-demo-assets/angel-one-hls/hls.m3u8">Shaka · Angel One (HLS multi-codec)</option>
+            <option value="https://bitdash-a.akamaihd.net/content/MI201109210084_1/m3u8s/f08e80da-bf1d-4e3d-8899-f0f6155f6efa.m3u8">Bitmovin · Art of Motion (HLS)</option>
+            <option value="https://cdn.jwplayer.com/manifests/pZxWPRg4.m3u8">JW Player · Bip Bop (HLS)</option>
+            <option value="https://playertest.longtailvideo.com/adaptive/wowzaid3/playlist.m3u8">Longtail · ID3 Timed Metadata (HLS)</option>
+            <option value="https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.m3u8">Unified · Tears of Steel (HLS)</option>
+          </optgroup>
+
+          <optgroup label="HLS — Live">
+            <option value="https://cph-p2p-msl.akamaized.net/hls/live/2000341/test/master.m3u8">Akamai · Live Test Feed</option>
+            <option value="https://moctobpltc-i.akamaihd.net/hls/live/571329/eight/playlist.m3u8">Akamai · Channel 8 Live</option>
+          </optgroup>
+
+          <optgroup label="MPEG-DASH — Clear">
+            <option value="https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps.mpd">Akamai · Big Buck Bunny 30fps (DASH)</option>
+            <option value="https://storage.googleapis.com/shaka-demo-assets/angel-one/dash.mpd">Shaka · Angel One (DASH)</option>
+            <option value="https://bitmovin-a.akamaihd.net/content/MI201109210084_1/mpds/f08e80da-bf1d-4e3d-8899-f0f6155f6efa.mpd">Bitmovin · Art of Motion (DASH)</option>
+            <option value="https://media.axprod.net/TestVectors/v7-MultiDRM-SingleKey/Manifest_1080p_ClearKey.mpd">Axinom · 1080p Clear (DASH)</option>
+            <option value="https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.mpd">Unified · Tears of Steel (DASH)</option>
+            <option value="https://dash.akamaized.net/dash264/TestCases/2c/qualcomm/1/MultiResMPEG2.mpd">Akamai · Multi-Resolution MPEG-2 (DASH)</option>
+          </optgroup>
+
+          <optgroup label="DASH — Live">
+            <option value="https://livesim.dashif.org/livesim/testpic_2s/Manifest.mpd">DASHIF · Live Sim (2s segments)</option>
+            <option value="https://livesim.dashif.org/livesim/chunkdur_1/testpic_2s/Manifest.mpd">DASHIF · Live Sim CMAF chunks</option>
+          </optgroup>
+
+          <optgroup label="Widevine DRM">
+            <option value="__shaka_widevine__">Shaka · Widevine (enters license URL)</option>
+          </optgroup>
+
+          <optgroup label="HEVC / H.265">
+            <option value="https://bitmovin-a.akamaihd.net/content/dataset/multi-codec/hevc/stream_fmp4.m3u8">Bitmovin · HEVC fMP4 (HLS)</option>
+            <option value="https://storage.googleapis.com/shaka-demo-assets/angel-one-hls/hls.m3u8">Shaka · Angel One (may select HEVC)</option>
+          </optgroup>
+
+          <optgroup label="⊛ SCTE-35 / Ad Markers">
+            <option value="__scte35_dashif__">DASHIF · Live SCTE-35 EventStream (DASH) ★</option>
+            <option value="__scte35_dashif_3__">DASHIF · Live SCTE-35 v3 + Periods (DASH) ★</option>
+            <option value="__scte35_multiperiod__">DASHIF · Multi-Period (60s ad pods) ★</option>
+            <option value="https://playertest.longtailvideo.com/adaptive/wowzaid3/playlist.m3u8">Longtail · HLS ID3/SCTE-35 Timed Metadata ★</option>
+            <option value="__scte35_akamai_ssai__">Akamai · SSAI HLS (splice-on-segment) ★</option>
+            <option value="__hls_daterange__">Apple · HLS DATERANGE Ad Markers ★</option>
+          </optgroup>
+
+          <optgroup label="⚡ Discontinuity">
+            <option value="__disc_bipbop_ts__">Apple · BipBop Advanced TS (EXT-X-DISCONTINUITY) ★</option>
+            <option value="__disc_bipbop_hevc__">Apple · BipBop Advanced HEVC/CMAF ★</option>
+            <option value="__disc_akamai__">Akamai · Ad-Stitched VOD (discontinuity per break) ★</option>
+            <option value="https://playertest.longtailvideo.com/adaptive/oceans_aes/oceans_aes.m3u8">Longtail · Oceans AES + Discontinuities ★</option>
+          </optgroup>
+
+        </select>
+      </div>
+    </section>
+
+    <section class="config-section" id="drmSection">
+      <h3 class="section-title">
+        DRM / Widevine
+        <span class="toggle-arrow" id="drmToggle">▾</span>
+      </h3>
+      <div id="drmBody">
+        <label class="field-label">License Server URL</label>
+        <input id="licenseUrl" class="input" type="url"
+               placeholder="https://license.example.com/widevine" spellcheck="false" />
+
+        <label class="field-label" style="margin-top:10px">Custom Request Headers</label>
+        <div id="headersList" class="headers-list"></div>
+        <button class="btn btn--small" id="addHeaderBtn">+ Add Header</button>
+
+        <label class="field-label" style="margin-top:10px">License Request Body (base64, optional)</label>
+        <input id="licenseRequestBody" class="input" type="text"
+               placeholder="Leave blank for standard requests" spellcheck="false" />
+
+        <div class="field-row" style="margin-top:12px">
+          <label class="field-label" style="margin:0">Widevine Robustness</label>
+          <select id="wvRobustness" class="input input--sm">
+            <option value="SW_SECURE_CRYPTO">SW_SECURE_CRYPTO</option>
+            <option value="SW_SECURE_DECODE">SW_SECURE_DECODE</option>
+            <option value="HW_SECURE_CRYPTO">HW_SECURE_CRYPTO</option>
+            <option value="HW_SECURE_DECODE">HW_SECURE_DECODE</option>
+            <option value="HW_SECURE_ALL">HW_SECURE_ALL</option>
+          </select>
+        </div>
+
+        <!-- License server connectivity test -->
+        <div style="margin-top:12px;display:flex;gap:6px;align-items:center">
+          <button class="btn btn--small" id="testLicenseBtn" title="POST to license server with your headers to verify connectivity">⚡ Test License Server</button>
+          <span id="licenseTestResult" class="license-test-badge"></span>
+        </div>
+        <div id="licenseTestDetail" class="license-test-detail" style="display:none"></div>
+      </div>
+    </section>
+
+    <section class="config-section">
+      <h3 class="section-title">
+        Codec Preferences
+        <span class="toggle-arrow" id="codecToggle">▾</span>
+      </h3>
+      <div id="codecBody">
+        <label class="field-label">Video Codec Priority</label>
+        <div class="checkbox-group">
+          <label><input type="checkbox" id="prefHEVC" checked /> Prefer HEVC (hev1/hvc1)</label>
+          <label><input type="checkbox" id="prefAV1" /> Prefer AV1 (av01)</label>
+          <label><input type="checkbox" id="prefH264" checked /> Allow H.264 (avc1)</label>
+        </div>
+
+        <label class="field-label" style="margin-top:10px">ABR / Bandwidth</label>
+        <div class="field-row">
+          <label class="field-label" style="margin:0;font-size:11px">Start bitrate (kbps)</label>
+          <input id="startBandwidth" class="input input--sm" type="number"
+                 value="5000" min="100" max="100000" />
+        </div>
+      </div>
+    </section>
+
+    <div class="load-row">
+      <button class="btn btn--primary" id="loadBtn">▶ Load &amp; Play</button>
+      <button class="btn btn--danger"  id="stopBtn" disabled>■ Stop</button>
+    </div>
+  </aside>
+
+  <!-- ── RIGHT PANEL: Player + Analyzer ─────────────────────────────────── -->
+  <main class="player-area">
+
+    <!-- Video wrapper -->
+    <div class="video-wrapper" id="videoWrapper">
+      <video id="video" playsinline></video>
+
+      <div class="idle-overlay" id="idleOverlay">
+        <div class="idle-logo">▶</div>
+        <div class="idle-brand">AGPlayer</div>
+        <p>Enter a stream URL and press <strong>Load &amp; Play</strong></p>
+      </div>
+
+      <div class="spinner-overlay" id="spinnerOverlay" style="display:none">
+        <div class="spinner"></div>
+      </div>
+
+      <div class="error-overlay" id="errorOverlay" style="display:none">
+        <div class="error-icon">⚠</div>
+        <p id="errorMessage">An error occurred.</p>
+        <button class="btn btn--small" id="errorDismiss">Dismiss</button>
+      </div>
+
+      <div class="controls-bar" id="controlsBar">
+        <div class="controls-top">
+          <div class="seek-container">
+            <input id="seekBar" class="seek-bar" type="range" min="0" max="1000" value="0" step="1" />
+          </div>
+          <div class="time-display">
+            <span id="currentTime">0:00</span>
+            <span class="time-sep">/</span>
+            <span id="duration">0:00</span>
+          </div>
+        </div>
+        <div class="controls-bottom">
+          <div class="controls-left">
+            <button class="ctrl-btn" id="playPauseBtn" title="Play / Pause">▶</button>
+            <button class="ctrl-btn" id="muteBtn" title="Mute / Unmute">🔊</button>
+            <input id="volumeBar" class="volume-bar" type="range" min="0" max="100" value="80" />
+            <span class="live-badge" id="liveBadge" style="display:none">● LIVE</span>
+          </div>
+          <div class="controls-right">
+            <select id="qualitySelect" class="ctrl-select" title="Quality"></select>
+            <select id="audioSelect"   class="ctrl-select" title="Audio Track"></select>
+            <select id="textSelect"    class="ctrl-select" title="Subtitles"></select>
+            <button class="ctrl-btn" id="fullscreenBtn" title="Fullscreen">⛶</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════ STREAM ANALYSIS PANEL ═══════════ -->
+    <div class="analyzer-panel" id="analyzerPanel" style="display:none">
+
+      <!-- Drag-resize handle -->
+      <div class="az-resize-handle" id="analyzerResizeHandle"></div>
+
+      <!-- Tab bar -->
+      <div class="az-tabbar">
+        <span class="az-panel-label">Stream Analysis</span>
+        <div class="az-tabs">
+          <button class="az-tab az-tab--active" data-tab="overview">Overview</button>
+          <button class="az-tab" data-tab="buffer">Buffer</button>
+          <button class="az-tab" data-tab="events">Events</button>
+          <button class="az-tab" data-tab="markers">Markers</button>
+          <button class="az-tab" data-tab="manifest">Manifest</button>
+          <button class="az-tab" data-tab="tracks">Tracks</button>
+          <button class="az-tab" data-tab="network">Network</button>
+          <button class="az-tab" data-tab="charts">Charts</button>
+        </div>
+        <button class="az-close-btn" id="analyzerClose" title="Close">×</button>
+      </div>
+
+      <!-- ── Overview Tab ───────────────────────────────────────────────── -->
+      <div id="azOverview" class="az-view" style="display:flex">
+        <div class="az-overview-grid">
+
+          <div class="az-card">
+            <div class="az-card-title">Video</div>
+            <div class="az-row"><span>Codec</span>        <span id="az-vcodec">—</span></div>
+            <div class="az-row"><span>Resolution</span>   <span id="az-res">—</span></div>
+            <div class="az-row"><span>Frame Rate</span>   <span id="az-fps">—</span></div>
+            <div class="az-row"><span>Video Bitrate</span><span id="az-vbr">—</span></div>
+            <div class="az-row"><span>Container</span>    <span id="az-container">—</span></div>
+          </div>
+
+          <div class="az-card">
+            <div class="az-card-title">Audio &amp; Network</div>
+            <div class="az-row"><span>Codec</span>        <span id="az-acodec">—</span></div>
+            <div class="az-row"><span>Audio Bitrate</span><span id="az-abr">—</span></div>
+            <div class="az-row"><span>Total Bitrate</span><span id="az-tbr">—</span></div>
+            <div class="az-row"><span>ABR Estimate</span> <span id="az-abrest">—</span></div>
+            <div class="az-row"><span>Protocol</span>     <span id="az-protocol">—</span></div>
+          </div>
+
+          <div class="az-card">
+            <div class="az-card-title">Playback</div>
+            <div class="az-row"><span>Buffer Ahead</span> <span id="az-buf">—</span></div>
+            <div class="az-row"><span>Stream Type</span>  <span id="az-live">—</span></div>
+            <div class="az-row"><span>Live Latency</span> <span id="az-latency">—</span></div>
+            <div class="az-row"><span>Playback Rate</span><span id="az-rate">—</span></div>
+            <div class="az-row"><span>Load Latency</span> <span id="az-loadtime">—</span></div>
+          </div>
+
+          <div class="az-card">
+            <div class="az-card-title">Quality &amp; DRM</div>
+            <div class="az-row"><span>Decoded Frames</span><span id="az-decoded">—</span></div>
+            <div class="az-row"><span>Dropped Frames</span><span id="az-dropped">—</span></div>
+            <div class="az-row"><span>DRM System</span>   <span id="az-drm">—</span></div>
+            <div class="az-row az-row--wrap"><span>Key Status</span><span id="az-keystat">—</span></div>
+            <div class="az-row az-row--wrap"><span>Stream URL</span><span id="az-streamurl">—</span></div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- ── Buffer Timeline Tab ───────────────────────────────────────── -->
+      <div id="azBuffer" class="az-view" style="display:none">
+        <div class="az-buf-header">
+          <span class="az-hint">Visual buffer inspector — <strong>click to seek</strong>. Purple = buffered &nbsp;·&nbsp; Red = gap &nbsp;·&nbsp; Needle = playhead</span>
+          <div class="az-buf-stats">
+            <span class="az-buf-stat"><span>Buffered</span><span id="buf-buffered">—</span></span>
+            <span class="az-buf-stat"><span>Duration</span><span id="buf-duration">—</span></span>
+            <span class="az-buf-stat"><span>Ranges</span><span id="buf-ranges">—</span></span>
+            <span class="az-buf-stat"><span>Live Latency</span><span id="buf-latency">—</span></span>
+          </div>
+        </div>
+        <div class="az-buf-canvas-wrap">
+          <canvas id="bufTimeline" class="az-buf-canvas"></canvas>
+        </div>
+        <div class="az-buf-range-list" id="bufRangeList"></div>
+      </div>
+
+      <!-- ── Events Log Tab ─────────────────────────────────────────────── -->
+      <div id="azEvents" class="az-view" style="display:none">
+        <div class="az-net-toolbar">
+          <select class="input input--sm" id="azEvtFilter">
+            <option value="all">All categories</option>
+            <option value="player">Player</option>
+            <option value="video">Video</option>
+            <option value="drm">DRM</option>
+            <option value="abr">ABR</option>
+            <option value="network">Network</option>
+            <option value="info">Info</option>
+          </select>
+          <button class="btn btn--small" id="azClearEvents">Clear</button>
+          <span class="az-hint">Timestamped log of all player + video element events</span>
+        </div>
+        <div class="az-net-scroll">
+          <table class="az-table az-net-table">
+            <thead><tr><th style="width:86px">Time</th><th style="width:180px">Event</th><th>Detail</th></tr></thead>
+            <tbody id="az-evtlog">
+              <tr><td colspan="3" class="az-empty">No events yet — load a stream to see events</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- ── Markers Tab ───────────────────────────────────────────────── -->
+      <div id="azMarkers" class="az-view" style="display:none">
+
+        <!-- ── Live Ad Break Monitor (shown only when a break is active) ── -->
+        <div id="adMonitorPanel" class="adm-panel" style="display:none">
+          <div class="adm-header">
+            <span class="adm-live-dot"></span>
+            <strong>AD BREAK IN PROGRESS</strong>
+            <span id="adm-breaknum" class="adm-tag">—</span>
+            <span id="adm-slot" class="adm-tag adm-tag--blue">—</span>
+            <span id="adm-segtype" class="adm-tag adm-tag--purple">—</span>
+          </div>
+
+          <!-- Timer row -->
+          <div class="adm-timer-row">
+            <div class="adm-timer-block">
+              <span class="adm-timer-label">Elapsed</span>
+              <span class="adm-timer-val" id="adm-elapsed">00:00</span>
+            </div>
+            <div class="adm-timer-block">
+              <span class="adm-timer-label">Total</span>
+              <span class="adm-timer-val" id="adm-total">?</span>
+            </div>
+            <div class="adm-timer-block adm-timer-block--remain">
+              <span class="adm-timer-label">Remaining</span>
+              <span class="adm-timer-val" id="adm-remain">—</span>
+            </div>
+            <div class="adm-progress-wrap">
+              <div class="adm-progress-bar"><div id="adm-progress" class="adm-progress-fill"></div></div>
+            </div>
+          </div>
+
+          <!-- Slot sequence pills -->
+          <div id="adm-slots" class="adm-slots-row" style="display:none"></div>
+
+          <!-- Meta: UPID, Program ID, Scheme -->
+          <div class="adm-meta-row">
+            <span class="adm-meta-item"><span>UPID</span><span id="adm-upid">—</span></span>
+            <span class="adm-meta-item"><span>Program ID</span><span id="adm-progid">—</span></span>
+            <span class="adm-meta-item"><span>Scheme</span><span id="adm-scheme">—</span></span>
+          </div>
+
+          <!-- Tracking URLs -->
+          <div class="adm-track-section">
+            <span class="adm-track-label">🔗 Tracking URLs (from SCTE-35 descriptors)</span>
+            <div id="adm-tracking" class="adm-track-list">No tracking URLs in SCTE-35 descriptors</div>
+          </div>
+        </div>
+
+        <!-- Summary pills -->
+        <div class="mk-summary">
+          <span class="mk-pill mk-pill--ad">📢 Ad Breaks: <strong id="mk-count-ad">0</strong></span>
+          <span class="mk-pill mk-pill--disc">⚡ Discontinuities: <strong id="mk-count-disc">0</strong></span>
+          <span class="mk-pill mk-pill--scte">⊛ SCTE-35: <strong id="mk-count-scte">0</strong></span>
+          <span class="mk-pill mk-pill--evt">◆ Events: <strong id="mk-count-event">0</strong></span>
+          <div class="mk-tip">Fetch manifest from the <em>Manifest</em> tab to populate. Timeline regions from Shaka appear automatically.</div>
+        </div>
+
+        <!-- Filter + toolbar -->
+        <div class="az-net-toolbar">
+          <select class="input input--sm" id="azMarkerFilter">
+            <option value="all">All types</option>
+            <option value="ad-start">Ad Out (CUE-OUT)</option>
+            <option value="ad-end">Ad In (CUE-IN)</option>
+            <option value="discontinuity">Discontinuity</option>
+            <option value="scte35">SCTE-35</option>
+            <option value="daterange">DATERANGE</option>
+            <option value="event">Timeline Event</option>
+            <option value="period">Period Boundary</option>
+          </select>
+          <span class="az-hint">Click any row to seek to that position</span>
+        </div>
+
+        <!-- Marker table -->
+        <div class="az-net-scroll">
+          <table class="az-table az-net-table mk-table">
+            <thead>
+              <tr>
+                <th style="width:64px">Time</th>
+                <th style="width:88px">Type</th>
+                <th style="width:58px">Duration</th>
+                <th>Label</th>
+                <th style="width:160px">SCTE-35</th>
+              </tr>
+            </thead>
+            <tbody id="az-mktlog">
+              <tr><td colspan="5" class="az-empty">Fetch the manifest to detect ad markers</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Ad Session Log -->
+        <div class="adm-session-section">
+          <div class="adm-session-title">Ad Session Log</div>
+          <div id="adSessionLog" class="adm-session-log">
+            <div class="adm-log-empty">No ad breaks in this session yet</div>
+          </div>
+        </div>
+
+      </div><!-- end azMarkers -->
+
+      <!-- ── Manifest Tab ───────────────────────────────────────────────── -->
+      <div id="azManifest" class="az-view" style="display:none">
+        <div class="az-manifest-toolbar">
+          <button class="btn btn--small" id="azFetchManifest">⟳ Fetch / Refresh</button>
+          <span class="az-hint">Fetches and parses the raw manifest from the stream URL</span>
+        </div>
+        <div class="az-manifest-body">
+          <div class="az-manifest-tree" id="azManifestTree">
+            <span class="az-hint" style="padding:12px">Click "Fetch / Refresh" to parse the manifest</span>
+          </div>
+          <pre class="az-manifest-raw" id="azManifestContent">— load a stream to fetch the manifest —</pre>
+        </div>
+      </div>
+
+      <!-- ── Tracks Tab ─────────────────────────────────────────────────── -->
+      <div id="azTracks" class="az-view" style="display:none">
+        <div class="az-tracks-scroll">
+          <div class="az-table-heading">Video Variants</div>
+          <table class="az-table">
+            <thead><tr><th></th><th>Res</th><th>FPS</th><th>Codec</th><th>Bitrate</th><th>HDR</th></tr></thead>
+            <tbody id="az-vtracks"><tr><td colspan="6" class="az-empty">No tracks loaded</td></tr></tbody>
+          </table>
+
+          <div class="az-table-heading" style="margin-top:12px">Audio Tracks</div>
+          <table class="az-table">
+            <thead><tr><th>Language</th><th>Role</th><th>Label</th></tr></thead>
+            <tbody id="az-atracks"><tr><td colspan="3" class="az-empty">—</td></tr></tbody>
+          </table>
+
+          <div class="az-table-heading" style="margin-top:12px">Subtitle Tracks</div>
+          <table class="az-table">
+            <thead><tr><th></th><th>Language</th><th>Label</th><th>Kind</th></tr></thead>
+            <tbody id="az-ttracks"><tr><td colspan="4" class="az-empty">—</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- ── Network Tab ────────────────────────────────────────────────── -->
+      <div id="azNetwork" class="az-view" style="display:none">
+        <div class="az-net-toolbar">
+          <select class="input input--sm" id="azNetFilter">
+            <option value="all">All types</option>
+            <option value="manifest">Manifest</option>
+            <option value="segment">Segment</option>
+            <option value="license">License</option>
+            <option value="key">Key</option>
+            <option value="timing">Timing</option>
+            <option value="cert">Certificate</option>
+          </select>
+          <button class="btn btn--small" id="azClearLog">Clear</button>
+          <span class="az-hint" id="azLogCount">0 requests captured</span>
+        </div>
+        <div class="az-net-scroll">
+          <table class="az-table az-net-table">
+            <thead>
+              <tr>
+                <th style="width:90px">Time</th>
+                <th style="width:72px">Type</th>
+                <th>URL</th>
+                <th style="width:52px">Status</th>
+                <th style="width:68px">Size</th>
+                <th style="width:72px">Duration</th>
+              </tr>
+            </thead>
+            <tbody id="az-netlog">
+              <tr><td colspan="6" class="az-empty">No requests captured yet — load a stream to see traffic</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- ── Charts Tab ─────────────────────────────────────────────────── -->
+      <div id="azCharts" class="az-view" style="display:none">
+        <div class="az-charts-grid">
+
+          <div class="az-chart-card">
+            <div class="az-chart-header">
+              <span class="az-chart-title" style="color:#6c63ff">Bitrate</span>
+              <span class="az-chart-val" id="chart-br-val">—</span>
+            </div>
+            <canvas id="chartBitrate" class="az-canvas"></canvas>
+            <div class="az-chart-hint">Live selected variant bandwidth over the last 120 s</div>
+          </div>
+
+          <div class="az-chart-card">
+            <div class="az-chart-header">
+              <span class="az-chart-title" style="color:#4ecca3">Buffer Ahead</span>
+              <span class="az-chart-val" id="chart-buf-val">—</span>
+            </div>
+            <canvas id="chartBuffer" class="az-canvas"></canvas>
+            <div class="az-chart-hint">Seconds of buffered media ahead of playhead</div>
+          </div>
+
+          <div class="az-chart-card">
+            <div class="az-chart-header">
+              <span class="az-chart-title" style="color:#e05252">Dropped Frames / s</span>
+              <span class="az-chart-val" id="chart-dr-val">—</span>
+            </div>
+            <canvas id="chartDropped" class="az-canvas"></canvas>
+            <div class="az-chart-hint">Frames dropped per second — high values indicate decode overload</div>
+          </div>
+
+          <div class="az-chart-card">
+            <div class="az-chart-header">
+              <span class="az-chart-title" style="color:#ffa033">Live Latency</span>
+              <span class="az-chart-val" id="chart-lat-val">—</span>
+            </div>
+            <canvas id="chartLatency" class="az-canvas"></canvas>
+            <div class="az-chart-hint">Seconds behind the live edge — lower is better for low-latency HLS</div>
+          </div>
+
+        </div>
+      </div>
+
+    </div>
+    <!-- end analyzer panel -->
+
+    <!-- Container / Codec info strip (auto-populated on load) -->
+    <div class="container-strip" id="containerStrip" style="display:none">
+      <span class="cs-item cs-format"  id="cs-format">—</span>
+      <span class="cs-sep">·</span>
+      <span class="cs-item cs-container" id="cs-container">—</span>
+      <span class="cs-sep">·</span>
+      <span class="cs-item" id="cs-vcodec">—</span>
+      <span class="cs-sep">·</span>
+      <span class="cs-item" id="cs-acodec">—</span>
+      <span class="cs-sep">·</span>
+      <span class="cs-item" id="cs-res">—</span>
+      <span class="cs-sep">·</span>
+      <span class="cs-item" id="cs-tbr">—</span>
+    </div>
+
+    <!-- Status bar -->
+    <div class="status-bar">
+      <span id="statusMsg" class="status-msg">Ready</span>
+      <span class="status-right">
+        <span id="wvStatus">Widevine: checking…</span>
+        <span class="status-sep">|</span>
+        <span id="hevcStatus">HEVC: checking…</span>
+      </span>
+    </div>
+  </main>
+</div>
+
+<!-- ═══════════════════════════════ ABOUT MODAL ═══════════════════════════════ -->
+<div class="modal-backdrop" id="aboutBackdrop" style="display:none">
+  <div class="modal about-modal">
+    <div class="about-header">
+      <div class="about-logo">▶</div>
+      <div>
+        <div class="about-product">AGPlayer</div>
+        <div class="about-tagline">HEVC · CMAF · DRM</div>
+      </div>
+    </div>
+    <div class="about-body">
+      <div class="about-row"><span class="about-key">Version</span><span class="about-val">1.0.0</span></div>
+      <div class="about-row"><span class="about-key">Author</span><span class="about-val">Gauraw</span></div>
+      <div class="about-row"><span class="about-key">Contact</span><span class="about-val about-link" id="aboutEmail">gauraw2004amit@gmail.com</span></div>
+      <div class="about-row"><span class="about-key">Engine</span><span class="about-val">Electron + Shaka Player 4.x</span></div>
+      <div class="about-row"><span class="about-key">DRM</span><span class="about-val">Widevine (via Chromium EME)</span></div>
+      <div class="about-row"><span class="about-key">Formats</span><span class="about-val">HLS, MPEG-DASH, CMAF, HEVC, AV1, H.264</span></div>
+      <div class="about-divider"></div>
+      <p class="about-copy">Copyright &copy; 2026 Gauraw. All rights reserved.</p>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn--primary" id="aboutClose">Close</button>
+    </div>
+  </div>
+</div>
+
+<script src="../node_modules/shaka-player/dist/shaka-player.compiled.js"></script>
+<script src="admarkers.js"></script>
+<script src="analyzer.js"></script>
+<script src="player.js"></script>
+</body>
+</html>
