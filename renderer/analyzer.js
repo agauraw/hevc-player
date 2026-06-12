@@ -639,11 +639,13 @@ class StreamAnalyzer {
     const disc  = all.filter(m => m.type === 'discontinuity');
     const scte  = all.filter(m => m.type === 'scte35');
     const evts  = all.filter(m => m.type === 'event' || m.type === 'period' || m.type === 'daterange');
+    const gaps  = all.filter(m => m.type === 'schedule-gap');
     const setT  = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
     setT('mk-count-ad',    String(Math.floor(ads.length / 2)) + ' break' + (ads.length !== 2 ? 's' : ''));
     setT('mk-count-disc',  String(disc.length));
     setT('mk-count-scte',  String(scte.length));
     setT('mk-count-event', String(evts.length));
+    setT('mk-count-gap',   String(gaps.length));
   }
 
   _renderMarkers() {
@@ -658,14 +660,15 @@ class StreamAnalyzer {
     }
 
     const TYPE_CFG = {
-      'ad-start':      { color: '#ffa033', label: 'AD OUT' },
-      'ad-end':        { color: '#4ecca3', label: 'AD IN'  },
-      'discontinuity': { color: '#e05252', label: 'DISC'   },
-      'scte35':        { color: '#6c63ff', label: 'SCTE-35'},
+      'ad-start':      { color: '#ffa033', label: 'AD OUT'   },
+      'ad-end':        { color: '#4ecca3', label: 'AD IN'    },
+      'discontinuity': { color: '#e05252', label: 'DISC'     },
+      'scte35':        { color: '#6c63ff', label: 'SCTE-35'  },
       'daterange':     { color: '#ff77aa', label: 'DATERANGE'},
-      'event':         { color: '#88aaff', label: 'EVENT'  },
-      'period':        { color: '#ccaa33', label: 'PERIOD' },
-      'pdt':           { color: '#7a7a9a', label: 'PDT'    },
+      'event':         { color: '#88aaff', label: 'EVENT'    },
+      'period':        { color: '#ccaa33', label: 'PERIOD'   },
+      'pdt':           { color: '#7a7a9a', label: 'PDT'      },
+      'schedule-gap':  { color: '#ff4466', label: 'SCHED GAP'},
     };
 
     tbody.innerHTML = rows.map((m, idx) => {
@@ -1003,6 +1006,22 @@ class StreamAnalyzer {
         ctx.setLineDash([3, 2]);
         ctx.beginPath(); ctx.moveTo(mx, 0); ctx.lineTo(mx, H); ctx.stroke();
         ctx.setLineDash([]);
+      } else if (m.type === 'schedule-gap') {
+        // Red-pink hatched region for the gap span
+        const gx2 = m.duration > 0 ? tX(m.time + m.duration) : mx + 2;
+        ctx.save();
+        ctx.fillStyle = 'rgba(255,68,102,0.18)';
+        ctx.fillRect(mx, 0, Math.max(2, gx2 - mx), H);
+        ctx.strokeStyle = 'rgba(255,68,102,0.7)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 3]);
+        ctx.strokeRect(mx, 0, Math.max(2, gx2 - mx), H);
+        ctx.setLineDash([]);
+        ctx.fillStyle = 'rgba(255,68,102,0.9)';
+        ctx.font = 'bold 8px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('GAP', (mx + Math.max(mx + 2, gx2)) / 2, 10);
+        ctx.restore();
       }
     }
 

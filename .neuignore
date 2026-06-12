@@ -1,0 +1,14 @@
+node_modules/
+dist/
+git/
+scripts/
+.git/
+.gitignore
+*.code-workspace
+main.js
+preload.js
+package.json
+package-lock.json
+neutralino.config.json
+README*
+*.zip

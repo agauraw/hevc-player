@@ -8,7 +8,7 @@
              script-src 'self' 'unsafe-inline';
              style-src 'self' 'unsafe-inline';
              media-src * blob: data:;
-             connect-src * blob: data:" />
+             connect-src * blob: data: ws://localhost:* http://localhost:*" />
   <title>AGPlayer</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
@@ -391,6 +391,7 @@
           <span class="mk-pill mk-pill--disc">⚡ Discontinuities: <strong id="mk-count-disc">0</strong></span>
           <span class="mk-pill mk-pill--scte">⊛ SCTE-35: <strong id="mk-count-scte">0</strong></span>
           <span class="mk-pill mk-pill--evt">◆ Events: <strong id="mk-count-event">0</strong></span>
+          <span class="mk-pill mk-pill--gap">⚠ Schedule Gaps: <strong id="mk-count-gap">0</strong></span>
           <div class="mk-tip">Fetch manifest from the <em>Manifest</em> tab to populate. Timeline regions from Shaka appear automatically.</div>
         </div>
 
@@ -405,6 +406,7 @@
             <option value="daterange">DATERANGE</option>
             <option value="event">Timeline Event</option>
             <option value="period">Period Boundary</option>
+            <option value="schedule-gap">Schedule Gap</option>
           </select>
           <span class="az-hint">Click any row to seek to that position</span>
         </div>
@@ -607,7 +609,9 @@
   </div>
 </div>
 
-<script src="../node_modules/shaka-player/dist/shaka-player.compiled.js"></script>
+<script src="/__neutralino_globals.js"></script>
+<script src="bridge.js"></script>
+<script src="shaka-player.compiled.js"></script>
 <script src="admarkers.js"></script>
 <script src="analyzer.js"></script>
 <script src="player.js"></script>

@@ -295,6 +295,7 @@ function parseHLSMarkers(text) {
   let currentTime = 0;
   let inAdBreak = false;
   let adBreakStart = 0;
+  let scheduledBreakDur = 0;
   let discCount = 0;
   let pendingSegDur = 0;
 
@@ -325,7 +326,7 @@ function parseHLSMarkers(text) {
     if (line.startsWith('#EXT-X-CUE-OUT')) {
       const dm = line.match(/(?::|DURATION=)([\d.]+)/i);
       const dur = dm ? parseFloat(dm[1]) : 0;
-      inAdBreak = true; adBreakStart = currentTime;
+      inAdBreak = true; adBreakStart = currentTime; scheduledBreakDur = dur;
       const scte35 = tryScte35(lines[i + 1] || '');
       markers.push({ type: 'ad-start', time: currentTime, duration: dur,
         label: `Ad Break${dur ? ` (${dur}s)` : ''}`, raw: line, scte35 });
@@ -334,10 +335,24 @@ function parseHLSMarkers(text) {
 
     if (line.startsWith('#EXT-X-CUE-IN')) {
       inAdBreak = false;
-      const dur = +(currentTime - adBreakStart).toFixed(3);
+      const actual = +(currentTime - adBreakStart).toFixed(3);
       const scte35 = tryScte35(lines[i + 1] || '');
       markers.push({ type: 'ad-end', time: currentTime, duration: 0,
-        adBreakDuration: dur, label: `Ad Break End (after ${dur}s)`, raw: line, scte35 });
+        adBreakDuration: actual, label: `Ad Break End (after ${actual}s)`, raw: line, scte35 });
+      // Detect schedule gap: declared break duration was longer than actual
+      if (scheduledBreakDur > 0) {
+        const gap = +(scheduledBreakDur - actual).toFixed(3);
+        if (gap > 0.5) {
+          markers.push({ type: 'schedule-gap', time: currentTime, duration: gap,
+            label: `Schedule Gap: ${gap}s unfilled (scheduled ${scheduledBreakDur}s, actual ${actual}s)`,
+            raw: line, scheduledDur: scheduledBreakDur, actualDur: actual });
+        } else if (gap < -0.5) {
+          markers.push({ type: 'schedule-gap', time: currentTime + gap, duration: Math.abs(gap),
+            label: `Schedule Overage: ${Math.abs(gap).toFixed(3)}s over (scheduled ${scheduledBreakDur}s, actual ${actual}s)`,
+            raw: line, scheduledDur: scheduledBreakDur, actualDur: actual, overage: true });
+        }
+      }
+      scheduledBreakDur = 0;
       continue;
     }
 
@@ -366,6 +381,16 @@ function parseHLSMarkers(text) {
     if (line.startsWith('#EXT-X-PROGRAM-DATE-TIME:')) {
       markers.push({ type: 'pdt', time: currentTime, duration: 0,
         label: 'Program Date-Time', raw: line, dateTime: line.split(':').slice(1).join(':') });
+    }
+
+    // End-of-playlist: flag an unclosed ad break
+    if (line === '#EXT-X-ENDLIST' && inAdBreak) {
+      const actual = +(currentTime - adBreakStart).toFixed(3);
+      const gap = scheduledBreakDur > 0 ? +(scheduledBreakDur - actual).toFixed(3) : 0;
+      markers.push({ type: 'schedule-gap', time: currentTime, duration: gap > 0 ? gap : 0,
+        label: `Unclosed Ad Break at end of playlist${gap > 0 ? ` (${gap}s unplayed)` : ''}`,
+        raw: line, scheduledDur: scheduledBreakDur, actualDur: actual, unclosed: true });
+      inAdBreak = false;
     }
   }
 
@@ -402,16 +427,36 @@ function parseDASHMarkers(text) {
     });
   });
 
-  // Period boundaries (ad pod insertion points)
+  // Period boundaries (ad pod insertion points) + schedule gap detection
   const periods = doc.querySelectorAll('Period');
-  periods.forEach((p, idx) => {
-    if (idx === 0) return;
+  const periodList = Array.from(periods).map((p, idx) => {
     const start = p.getAttribute('start') || '';
-    const startS = parseDuration(start);
-    markers.push({ type: 'period', time: startS, duration: 0,
-      label: `Period ${idx + 1}${start ? ` @ ${start}` : ''}`,
-      raw: `<Period id="${p.getAttribute('id') || ''}" start="${start}">` });
+    const dur   = p.getAttribute('duration') || '';
+    return { idx, el: p, startS: parseDuration(start), durS: dur ? parseDuration(dur) : null, startAttr: start };
   });
+
+  periodList.forEach(({ el, idx, startS, durS, startAttr }) => {
+    if (idx === 0) return;
+    markers.push({ type: 'period', time: startS, duration: 0,
+      label: `Period ${idx + 1}${startAttr ? ` @ ${startAttr}` : ''}`,
+      raw: `<Period id="${el.getAttribute('id') || ''}" start="${startAttr}">` });
+  });
+
+  // Check for timing gaps between consecutive periods
+  for (let i = 0; i < periodList.length - 1; i++) {
+    const curr = periodList[i];
+    const next = periodList[i + 1];
+    if (curr.durS !== null) {
+      const expectedNext = +(curr.startS + curr.durS).toFixed(3);
+      const gap = +(next.startS - expectedNext).toFixed(3);
+      if (gap > 0.5) {
+        markers.push({ type: 'schedule-gap', time: expectedNext, duration: gap,
+          label: `Schedule Gap: ${gap}s between Period ${curr.idx + 1} and Period ${next.idx + 1}`,
+          raw: `Period ${curr.idx + 1} ends at ${expectedNext}s, Period ${next.idx + 1} starts at ${next.startS}s`,
+          gapStart: expectedNext, gapEnd: next.startS });
+      }
+    }
+  }
 
   markers.sort((a, b) => a.time - b.time);
   return { markers };

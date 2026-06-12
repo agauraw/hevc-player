@@ -1026,6 +1026,8 @@ video::-webkit-media-controls { display: none !important; }
 .mk-pill--disc { border-color: rgba(224,82,82,0.4); }
 .mk-pill--scte { border-color: rgba(108,99,255,0.4); }
 .mk-pill--evt  { border-color: rgba(136,170,255,0.4); }
+.mk-pill--gap  { border-color: rgba(255,68,102,0.5); color: #ff4466; }
+.mk-pill--gap strong { color: #ff4466; }
 .mk-tip { font-size: 10px; color: var(--text-dim); margin-left: auto; font-style: italic; }
 .mk-tip em { color: var(--accent); font-style: normal; }
 
