@@ -7,10 +7,11 @@
     "email": "gauraw2004amit@gmail.com"
   },
   "scripts": {
-    "prebuild": "node scripts/prebuild.js",
-    "start":   "node scripts/prebuild.js && neu run",
-    "build":   "node scripts/prebuild.js && neu build --release",
-    "update":  "neu update"
+    "prebuild":   "node scripts/prebuild.js",
+    "start":      "node scripts/prebuild.js && neu run",
+    "build":      "node scripts/prebuild.js && neu build --release",
+    "build:web":  "node scripts/export-web.js",
+    "update":     "neu update"
   },
   "dependencies": {
     "shaka-player": "^4.14.0"
