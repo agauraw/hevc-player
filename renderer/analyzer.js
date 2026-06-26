@@ -11,6 +11,57 @@ const EVT_COLORS = {
 };
 const HISTORY_LEN = 120;
 
+// HLS tag catalogue — name → { cat, desc }
+const HLS_TAG_DEFS = {
+  'EXTM3U':                     { cat:'Basic',          desc:'Required M3U header — identifies this as an HLS playlist' },
+  'EXT-X-VERSION':              { cat:'Basic',          desc:'HLS protocol version (latest is 12)' },
+  'EXT-X-INDEPENDENT-SEGMENTS': { cat:'Basic',          desc:'Every segment can be decoded independently of others' },
+  'EXT-X-START':                { cat:'Basic',          desc:'Preferred playback start position (TIME-OFFSET attribute)' },
+  'EXT-X-DEFINE':               { cat:'Basic',          desc:'Variable definition — value substituted via {$VAR} syntax' },
+  'EXT-X-TARGETDURATION':       { cat:'Media Playlist', desc:'Maximum segment duration in seconds (must be integer)' },
+  'EXT-X-MEDIA-SEQUENCE':       { cat:'Media Playlist', desc:'Sequence number of the first segment in the playlist' },
+  'EXT-X-DISCONTINUITY-SEQUENCE':{ cat:'Media Playlist',desc:'Synchronizes discontinuity counters across renditions' },
+  'EXT-X-ENDLIST':              { cat:'Media Playlist', desc:'No more segments will be appended — stream is VOD or event ended' },
+  'EXT-X-PLAYLIST-TYPE':        { cat:'Media Playlist', desc:'VOD (immutable list) or EVENT (segments only appended)' },
+  'EXT-X-I-FRAMES-ONLY':        { cat:'Media Playlist', desc:'Playlist contains only I-frames for trick-play (fast fwd/rwd)' },
+  'EXT-X-ALLOW-CACHE':          { cat:'Media Playlist', desc:'(Removed in v7) Whether clients may cache downloaded segments' },
+  'EXTINF':                     { cat:'Segment',        desc:'Duration of the following segment (seconds) and optional title' },
+  'EXT-X-BYTERANGE':            { cat:'Segment',        desc:'Partial HTTP byte-range of the following segment URI' },
+  'EXT-X-DISCONTINUITY':        { cat:'Segment',        desc:'Encoding discontinuity between preceding and following segment' },
+  'EXT-X-KEY':                  { cat:'Segment / DRM',  desc:'Encryption method and key URI (AES-128, SAMPLE-AES, NONE)' },
+  'EXT-X-MAP':                  { cat:'Segment',        desc:'Initialization data (fMP4 init segment or TS PAT/PMT)' },
+  'EXT-X-PROGRAM-DATE-TIME':    { cat:'Segment',        desc:'Absolute ISO-8601 date/time of the first sample of the next segment' },
+  'EXT-X-GAP':                  { cat:'Segment',        desc:'Marks that the following segment is unavailable (gap in stream)' },
+  'EXT-X-BITRATE':              { cat:'Segment',        desc:'Approximate bitrate of the following segments (kbps)' },
+  'EXT-X-PART':                 { cat:'Low Latency',    desc:'Low-latency partial segment (LHLS)' },
+  'EXT-X-PART-INF':             { cat:'Low Latency',    desc:'Maximum partial segment duration (PART-TARGET)' },
+  'EXT-X-SERVER-CONTROL':       { cat:'Low Latency',    desc:'Server push and delta update parameters (CAN-SKIP-UNTIL, etc.)' },
+  'EXT-X-SKIP':                 { cat:'Low Latency',    desc:'Delta playlist update — segments skipped since last full playlist' },
+  'EXT-X-PRELOAD-HINT':         { cat:'Low Latency',    desc:'Preload hint for the next partial segment or map' },
+  'EXT-X-RENDITION-REPORT':     { cat:'Low Latency',    desc:'Current state of another rendition\'s playlist' },
+  'EXT-X-DATERANGE':            { cat:'Metadata',       desc:'Timed metadata range (ads, chapters, SCTE-35 cues)' },
+  'EXT-X-MEDIA':                { cat:'Master Playlist',desc:'Alternate rendition — audio track, subtitle, or closed-caption group' },
+  'EXT-X-STREAM-INF':           { cat:'Master Playlist',desc:'Variant stream — BANDWIDTH, CODECS, RESOLUTION, FRAME-RATE' },
+  'EXT-X-I-FRAME-STREAM-INF':   { cat:'Master Playlist',desc:'I-frame only variant stream for trick play' },
+  'EXT-X-SESSION-DATA':         { cat:'Master Playlist',desc:'Arbitrary session-level key/value metadata' },
+  'EXT-X-SESSION-KEY':          { cat:'Master Playlist',desc:'Session-level DRM key (pre-loads decryption for renditions)' },
+  'EXT-X-CONTENT-STEERING':     { cat:'Master Playlist',desc:'Content steering manifest URI for CDN/server selection' },
+  // Common ad-marker extensions (not in RFC 8216 but widely deployed)
+  'EXT-X-CUE-OUT':              { cat:'Ad Markers',     desc:'Splice-out start — duration attribute marks ad pod length' },
+  'EXT-X-CUE-IN':               { cat:'Ad Markers',     desc:'Splice-in end — returns to network content' },
+  'EXT-X-CUE-OUT-CONT':         { cat:'Ad Markers',     desc:'Out-of-network continuation marker (ElapsedTime / Duration)' },
+  'EXT-X-CUE':                  { cat:'Ad Markers',     desc:'Generic cue marker (various formats used by different CDNs)' },
+  'EXT-X-SCTE35':               { cat:'Ad Markers',     desc:'Inline SCTE-35 splice info (base64-encoded binary)' },
+  'EXT-X-OATCLS-SCTE35':        { cat:'Ad Markers',     desc:'OATCLS variant of SCTE-35 (common Akamai / MediaTailor format)' },
+  'EXT-X-ASSET':                { cat:'Ad Markers',     desc:'Ad decision server asset metadata' },
+  'EXT-X-AD-RESTRICTIONS':      { cat:'Ad Markers',     desc:'Ad restriction flags (blackout, ratings, etc.)' },
+  'EXT-X-MARKER':               { cat:'Ad Markers',     desc:'Generic ad splice marker' },
+};
+
+const HLS_CAT_ORDER = [
+  'Basic','Master Playlist','Media Playlist','Segment','Segment / DRM','Low Latency','Metadata','Ad Markers','Custom',
+];
+
 function esc(s) {
   return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
@@ -62,6 +113,27 @@ class StreamAnalyzer {
     this._masterManifest      = null; // { url, text, isHLS }
     this._childManifests      = [];   // [{ url, label, type, text, error, codecs }]
     this._selectedManifestIdx = -1;   // -1 = master
+    this._viewAllActive       = false;
+    this._tagsViewActive      = false;
+    this._multiPlayers        = [];   // [{ sp, videoEl, cell, analyserL, analyserR, vuCanvas }]
+    this._mpMuted             = true;
+    this._mpAudioCtx          = null;
+    this._mpAudioAnimFrame    = null;
+    // Audio dB analyser
+    this._audioCtx       = null;
+    this._audioSource    = null;
+    this._analyserL      = null;
+    this._analyserR      = null;
+    this._analyserFreq   = null;
+    this._audioPeakHoldL = -Infinity;
+    this._audioPeakHoldR = -Infinity;
+    this._audioPeakTimeL = 0;
+    this._audioPeakTimeR = 0;
+    this._audioClipL     = false;
+    this._audioClipR     = false;
+    this._audioClipTimeL = 0;
+    this._audioClipTimeR = 0;
+    this._audioAnimFrame = null;
 
     this._bindUI();
   }
@@ -81,6 +153,7 @@ class StreamAnalyzer {
       events:   document.getElementById('azEvents'),
       markers:  document.getElementById('azMarkers'),
       charts:   document.getElementById('azCharts'),
+      audio:    document.getElementById('azAudio'),
       captions: document.getElementById('azCaptions'),
     };
     this._charts = {
@@ -89,7 +162,11 @@ class StreamAnalyzer {
       dropped: document.getElementById('chartDropped'),
       latency: document.getElementById('chartLatency'),
     };
-    this._bufCanvas = document.getElementById('bufTimeline');
+    this._bufCanvas     = document.getElementById('bufTimeline');
+    this._audioCanvas   = document.getElementById('audioMeterCanvas');
+    this._specCanvas    = document.getElementById('audioSpecCanvas');
+    this._playerVuEl    = document.getElementById('playerVu');
+    this._playerVuCanvas = document.getElementById('playerVuCanvas');
 
     this._tabBtns.forEach(b => b.addEventListener('click', () => this._switchTab(b.dataset.tab)));
     this._toggleBtn.addEventListener('click', () => this.toggle());
@@ -102,6 +179,22 @@ class StreamAnalyzer {
     document.getElementById('azManifestSelector')?.addEventListener('change', e => {
       this._showSelectedManifest(parseInt(e.target.value, 10));
     });
+    document.getElementById('azViewAll')?.addEventListener('click', () => this._toggleViewAll());
+    document.getElementById('azPlayAll')?.addEventListener('click', () => this._openPlayAll());
+    document.getElementById('azTagsBtn')?.addEventListener('click', () => this._toggleTagsView());
+    document.getElementById('azMismatchBtn')?.addEventListener('click', () => {
+      const p = document.getElementById('azMismatchPanel');
+      if (p) p.style.display = p.style.display === 'none' ? '' : 'none';
+    });
+    document.getElementById('azMismatchDismiss')?.addEventListener('click', () => {
+      const p = document.getElementById('azMismatchPanel');
+      if (p) p.style.display = 'none';
+    });
+    document.getElementById('azMpPlay')?.addEventListener('click',  () => this._mpPlayAll());
+    document.getElementById('azMpPause')?.addEventListener('click', () => this._mpPauseAll());
+    document.getElementById('azMpMute')?.addEventListener('click',  () => this._mpToggleMute());
+    document.getElementById('azMpSync')?.addEventListener('click',  () => this._mpSyncAll());
+    document.getElementById('azMpClose')?.addEventListener('click', () => this._closePlayAll());
     document.getElementById('azClearEvents').addEventListener('click', () => { this._eventLog=[]; this._renderEventLog(); });
     document.getElementById('azEvtFilter').addEventListener('change', () => this._renderEventLog());
     document.getElementById('azMarkerFilter').addEventListener('change', () => this._renderMarkers());
@@ -112,6 +205,13 @@ class StreamAnalyzer {
 
     // Click-to-seek on buffer timeline
     this._bufCanvas?.addEventListener('click', e => this._seekFromTimeline(e));
+
+    document.getElementById('auResetPeak')?.addEventListener('click', () => {
+      this._audioPeakHoldL = -Infinity;
+      this._audioPeakHoldR = -Infinity;
+      this._audioClipL = false;
+      this._audioClipR = false;
+    });
 
     this._initResize();
   }
@@ -138,11 +238,13 @@ class StreamAnalyzer {
     this._toggleBtn.classList.add('az-active');
     this._switchTab(this._activeTab);
     this._startBufAnimation();
+    this._startAudioAnimation();
   }
   close() {
     this._visible=false; this._panel.style.display='none';
     this._toggleBtn.classList.remove('az-active');
     this._stopBufAnimation();
+    this._stopAudioAnimation();
   }
   toggle() { this._visible?this.close():this.open(); }
 
@@ -263,12 +365,35 @@ class StreamAnalyzer {
     this._brHist.fill(null); this._bufHist.fill(null); this._drHist.fill(0); this._latHist.fill(null);
     this._tick=0; this._prevDrop=0; this._seqId=0; this._reqMap.clear();
     this._masterManifest=null; this._childManifests=[]; this._selectedManifestIdx=-1;
+    this._viewAllActive=false;
+    this._closePlayAll();
     const _cb=document.getElementById('azFetchChildren');
     const _cs=document.getElementById('azManifestSelector');
     const _ct=document.getElementById('azChildStatus');
+    const _va=document.getElementById('azViewAll');
+    const _pa=document.getElementById('azPlayAll');
+    const _tree=document.getElementById('azManifestTree');
+    const _raw=document.getElementById('azManifestContent');
+    const _grid=document.getElementById('azManifestGrid');
     if(_cb){_cb.style.display='none';_cb.disabled=false;_cb.textContent='⬇ All Children';}
     if(_cs) _cs.style.display='none';
     if(_ct) _ct.style.display='none';
+    if(_va){_va.disabled=true;_va.textContent='⊞ View All';_va.title='Fetch children first';}
+    if(_pa){_pa.disabled=true;_pa.title='Fetch children first';}
+    const _tb=document.getElementById('azTagsBtn');
+    const _tv=document.getElementById('azTagsView');
+    if(_tb){_tb.disabled=true;_tb.textContent='🏷 Tags';_tb.title='Fetch a manifest first';}
+    if(_tv){_tv.style.display='none';_tv.innerHTML='';}
+    this._tagsViewActive=false;
+    const _mb=document.getElementById('azMismatchBtn');
+    const _mp=document.getElementById('azMismatchPanel');
+    if(_mb) _mb.style.display='none';
+    if(_mp){ _mp.style.display='none'; const b=document.getElementById('azMismatchBody'); if(b) b.innerHTML=''; }
+    if(_tree) _tree.style.display='';
+    if(_raw)  _raw.style.display='';
+    if(_grid){_grid.style.display='none';_grid.innerHTML='';}
+    this._audioPeakHoldL = -Infinity; this._audioPeakHoldR = -Infinity;
+    this._audioClipL = false; this._audioClipR = false;
     this._renderNetworkLog(); this._renderEventLog(); this._clearOverview();
     document.getElementById('azManifestContent').textContent='— load a stream to fetch the manifest —';
     document.getElementById('azManifestTree').innerHTML='';
@@ -316,9 +441,17 @@ class StreamAnalyzer {
     this._player=player; this._video=video;
     this._startPolling();
     if(this._visible) this._startBufAnimation();
+    // Auto-setup audio so player VU works without opening the Audio tab
+    this._setupAudioContext();
+    if (this._playerVuEl) this._playerVuEl.style.display = 'block';
+    // Resume context once playback starts
+    this._video.addEventListener('play', () => {
+      if (this._audioCtx?.state === 'suspended') this._audioCtx.resume().catch(() => {});
+    });
   }
   detachFromPlayer() {
     this._stopPolling(); this._stopBufAnimation();
+    if (this._playerVuEl) this._playerVuEl.style.display = 'none';
     this._player=null; this._video=null;
   }
 
@@ -335,6 +468,387 @@ class StreamAnalyzer {
   }
   _stopBufAnimation() {
     if(this._bufTimerFrame){cancelAnimationFrame(this._bufTimerFrame);this._bufTimerFrame=null;}
+  }
+
+  // ── Audio dB Analyser ─────────────────────────────────────────────────────
+  _startAudioAnimation() {
+    this._stopAudioAnimation();
+    const draw = () => {
+      if (this._analyserL) this._drawPlayerVuMeter();
+      if (this._visible && this._activeTab === 'audio') this._drawAudio();
+      this._audioAnimFrame = requestAnimationFrame(draw);
+    };
+    this._audioAnimFrame = requestAnimationFrame(draw);
+  }
+  _stopAudioAnimation() {
+    if (this._audioAnimFrame) { cancelAnimationFrame(this._audioAnimFrame); this._audioAnimFrame = null; }
+  }
+
+  _setupAudioContext() {
+    if (!this._video) return;
+    if (this._audioCtx) {
+      if (this._audioCtx.state === 'suspended') this._audioCtx.resume().catch(() => {});
+      return;
+    }
+    try {
+      this._audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      this._audioSource = this._audioCtx.createMediaElementSource(this._video);
+      // Re-route to destination so audio keeps playing
+      this._audioSource.connect(this._audioCtx.destination);
+
+      // Frequency spectrum analyser (merged stereo)
+      this._analyserFreq = this._audioCtx.createAnalyser();
+      this._analyserFreq.fftSize = 2048;
+      this._analyserFreq.smoothingTimeConstant = 0.8;
+      this._analyserFreq.minDecibels = -100;
+      this._analyserFreq.maxDecibels = 0;
+      this._audioSource.connect(this._analyserFreq);
+
+      // L/R level analysers via channel splitter
+      const splitter = this._audioCtx.createChannelSplitter(2);
+      this._analyserL = this._audioCtx.createAnalyser();
+      this._analyserR = this._audioCtx.createAnalyser();
+      this._analyserL.fftSize = 2048;
+      this._analyserR.fftSize = 2048;
+      this._audioSource.connect(splitter);
+      splitter.connect(this._analyserL, 0);
+      splitter.connect(this._analyserR, 1);
+    } catch {
+      this._audioCtx = null;
+    }
+  }
+
+  _drawAudio() {
+    this._drawAudioMeter();
+    this._drawAudioWaveform();
+  }
+
+  _drawAudioMeter() {
+    const canvas = this._audioCanvas;
+    if (!canvas) return;
+    if (this._audioCtx?.state === 'suspended') this._audioCtx.resume().catch(() => {});
+
+    const dpr  = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    canvas.width  = Math.round(rect.width  * dpr);
+    canvas.height = Math.round(rect.height * dpr);
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+    const W = rect.width, H = rect.height;
+
+    ctx.fillStyle = '#080810';
+    ctx.fillRect(0, 0, W, H);
+
+    if (!this._analyserL) {
+      ctx.fillStyle = 'rgba(255,255,255,0.18)';
+      ctx.font = '9px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('Load a stream', W / 2, H / 2 - 6);
+      ctx.fillText('to start meter', W / 2, H / 2 + 8);
+      return;
+    }
+
+    // Layout
+    const DB_MIN = -60, DB_MAX = 0;
+    const LBL_W  = 26, MT = 12, MB = 4, MR = 3, GAP = 3;
+    const barH   = H - MT - MB;
+    const barsW  = W - LBL_W - MR;
+    const barW   = Math.max(4, (barsW - GAP) / 2);
+    const lX     = LBL_W;
+    const rX     = lX + barW + GAP;
+    const dbFrac = db => (Math.max(DB_MIN, Math.min(DB_MAX, db)) - DB_MIN) / (DB_MAX - DB_MIN);
+
+    // Read audio data
+    const bufLen = this._analyserL.frequencyBinCount;
+    const dataL  = new Float32Array(bufLen);
+    const dataR  = this._analyserR ? new Float32Array(bufLen) : null;
+    this._analyserL.getFloatTimeDomainData(dataL);
+    if (dataR) this._analyserR.getFloatTimeDomainData(dataR);
+
+    const rmsOf  = d => { let s = 0; for (let i = 0; i < d.length; i++) s += d[i] * d[i]; return Math.sqrt(s / d.length); };
+    const peakOf = d => { let m = 0; for (let i = 0; i < d.length; i++) { const v = Math.abs(d[i]); if (v > m) m = v; } return m; };
+    const toDb   = v => v > 1e-9 ? 20 * Math.log10(v) : -Infinity;
+
+    const rmsL   = rmsOf(dataL),  peakL = peakOf(dataL);
+    const rmsR   = dataR ? rmsOf(dataR)  : rmsL;
+    const peakR  = dataR ? peakOf(dataR) : peakL;
+    const rmsDbL = toDb(rmsL),  pDbL = toDb(peakL);
+    const rmsDbR = toDb(rmsR),  pDbR = toDb(peakR);
+
+    // Peak hold + clip
+    const now = performance.now();
+    const upHold = (db, hold, t) => {
+      if (db > hold || !isFinite(hold)) return { hold: db, t: now };
+      if (now - t > 2000) return { hold: hold - 0.4, t };
+      return { hold, t };
+    };
+    const resL = upHold(pDbL, this._audioPeakHoldL, this._audioPeakTimeL);
+    this._audioPeakHoldL = resL.hold; this._audioPeakTimeL = resL.t;
+    const resR = upHold(pDbR, this._audioPeakHoldR, this._audioPeakTimeR);
+    this._audioPeakHoldR = resR.hold; this._audioPeakTimeR = resR.t;
+
+    if (peakL >= 0.999) { this._audioClipL = true; this._audioClipTimeL = now; }
+    else if (now - this._audioClipTimeL > 1500) this._audioClipL = false;
+    if (peakR >= 0.999) { this._audioClipR = true; this._audioClipTimeR = now; }
+    else if (now - this._audioClipTimeR > 1500) this._audioClipR = false;
+
+    // Update readout elements
+    const setEl = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+    const fmtDb = db => isFinite(db) ? db.toFixed(1) + ' dB' : '—';
+    setEl('au-rms-l',  fmtDb(rmsDbL));
+    setEl('au-rms-r',  fmtDb(rmsDbR));
+    setEl('au-peak-l', fmtDb(this._audioPeakHoldL));
+    setEl('au-peak-r', fmtDb(this._audioPeakHoldR));
+    document.getElementById('au-clip-l')?.classList.toggle('au-clip--on', this._audioClipL);
+    document.getElementById('au-clip-r')?.classList.toggle('au-clip--on', this._audioClipR);
+
+    // dB scale grid lines + labels
+    ctx.font = '7.5px Courier New, monospace';
+    ctx.textAlign = 'right';
+    for (const db of [0, -3, -6, -12, -18, -24, -36, -48, -60]) {
+      const f = dbFrac(db);
+      const y = MT + barH * (1 - f);
+      ctx.fillStyle = 'rgba(255,255,255,0.22)';
+      ctx.fillText(db, LBL_W - 3, y + 3);
+      ctx.strokeStyle = db === 0 ? 'rgba(220,38,38,0.4)' : db === -18 ? 'rgba(234,179,8,0.22)' : 'rgba(255,255,255,0.07)';
+      ctx.lineWidth = 0.5;
+      ctx.beginPath(); ctx.moveTo(LBL_W - 1, y); ctx.lineTo(W - MR, y); ctx.stroke();
+    }
+
+    // Draw one bar (L or R)
+    const drawBar = (x, rmsDb, holdDb, clip, label) => {
+      ctx.fillStyle = 'rgba(255,255,255,0.04)';
+      ctx.fillRect(x, MT, barW, barH);
+
+      const fillH = barH * dbFrac(rmsDb);
+      if (fillH > 0.5) {
+        const grad = ctx.createLinearGradient(0, MT + barH, 0, MT);
+        grad.addColorStop(0,    '#166534');
+        grad.addColorStop(0.5,  '#16a34a');
+        grad.addColorStop(0.72, '#ca8a04');
+        grad.addColorStop(0.88, '#ea580c');
+        grad.addColorStop(1.0,  '#b91c1c');
+        ctx.fillStyle = grad;
+        ctx.fillRect(x, MT + barH - fillH, barW, fillH);
+      }
+
+      // Peak hold notch
+      if (isFinite(holdDb) && holdDb > DB_MIN) {
+        const hy = MT + barH * (1 - dbFrac(holdDb));
+        ctx.fillStyle = holdDb > -3 ? '#ef4444' : holdDb > -18 ? '#fbbf24' : '#4ecca3';
+        ctx.fillRect(x, hy - 1, barW, 2);
+      }
+
+      // Clip overlay
+      if (clip) { ctx.fillStyle = 'rgba(239,68,68,0.2)'; ctx.fillRect(x, MT, barW, barH); }
+
+      // Channel label above bar
+      ctx.font = 'bold 9px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = clip ? '#ef4444' : 'rgba(255,255,255,0.35)';
+      ctx.fillText(label, x + barW / 2, MT - 2);
+    };
+
+    drawBar(lX, rmsDbL, this._audioPeakHoldL, this._audioClipL, 'L');
+    drawBar(rX, rmsDbR, this._audioPeakHoldR, this._audioClipR, 'R');
+  }
+
+  _drawAudioWaveform() {
+    const canvas = this._specCanvas;
+    if (!canvas || !this._analyserL) return;
+
+    const dpr  = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    canvas.width  = Math.round(rect.width  * dpr);
+    canvas.height = Math.round(rect.height * dpr);
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+    const W = rect.width, H = rect.height;
+
+    ctx.fillStyle = '#080810';
+    ctx.fillRect(0, 0, W, H);
+
+    const bufLen = this._analyserL.frequencyBinCount;
+    const dataL  = new Float32Array(bufLen);
+    const dataR  = this._analyserR ? new Float32Array(bufLen) : null;
+    this._analyserL.getFloatTimeDomainData(dataL);
+    if (dataR) this._analyserR.getFloatTimeDomainData(dataR);
+
+    // dB scale column on the right
+    const SCALE_W = 28;
+    const plotW   = W - SCALE_W;
+    const halfH   = H / 2;
+    const PAD     = 6;   // vertical padding within each half
+
+    // Scale background
+    ctx.fillStyle = 'rgba(0,0,0,0.38)';
+    ctx.fillRect(plotW, 0, SCALE_W, H);
+    ctx.strokeStyle = 'rgba(255,255,255,0.07)';
+    ctx.lineWidth   = 0.5;
+    ctx.beginPath(); ctx.moveTo(plotW, 0); ctx.lineTo(plotW, H); ctx.stroke();
+
+    // "dBFS" header in scale column
+    ctx.save();
+    ctx.font      = '7px monospace';
+    ctx.fillStyle = 'rgba(255,255,255,0.2)';
+    ctx.textAlign = 'center';
+    ctx.translate(W - SCALE_W / 2, H / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.fillText('dBFS', 0, 0);
+    ctx.restore();
+
+    // dB levels to mark (positive amplitude side; negative mirrored)
+    const DB_MARKS = [0, -6, -12, -18, -24];
+
+    // Draw one channel's waveform with dB grid
+    const drawWave = (data, yBase, rP, gP, bP, label) => {
+      const usable = halfH - PAD * 2;
+      const cy     = yBase + PAD + usable / 2;  // center line Y
+
+      // dB grid lines + right-side labels
+      ctx.font      = '7px monospace';
+      ctx.textAlign = 'right';
+      for (const db of DB_MARKS) {
+        const amp  = db === 0 ? 0.999 : Math.pow(10, db / 20);
+        const yPos = cy - amp * usable / 2;   // positive amplitude line
+        const yNeg = cy + amp * usable / 2;   // negative amplitude line
+
+        const isClip = db === 0;
+        ctx.strokeStyle = isClip ? 'rgba(220,38,38,0.3)' : 'rgba(255,255,255,0.07)';
+        ctx.lineWidth   = isClip ? 0.8 : 0.5;
+
+        ctx.beginPath(); ctx.moveTo(0, yPos); ctx.lineTo(plotW, yPos); ctx.stroke();
+        if (db !== 0) { ctx.beginPath(); ctx.moveTo(0, yNeg); ctx.lineTo(plotW, yNeg); ctx.stroke(); }
+
+        // Label on positive side only
+        const lbl = db === 0 ? '0' : String(db);
+        ctx.fillStyle = isClip ? 'rgba(220,38,38,0.65)' : 'rgba(255,255,255,0.3)';
+        ctx.fillText(lbl, W - 3, yPos + 3);
+      }
+
+      // Zero (0 amplitude) center line
+      ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+      ctx.lineWidth   = 0.5;
+      ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(plotW, cy); ctx.stroke();
+      ctx.fillStyle   = 'rgba(255,255,255,0.15)';
+      ctx.textAlign   = 'right';
+      ctx.font        = '7px monospace';
+      ctx.fillText('—∞', W - 3, cy + 3);
+
+      if (!data) return;
+
+      const step = plotW / (bufLen - 1);
+
+      // Glow pass
+      ctx.strokeStyle = `rgba(${rP},${gP},${bP},0.18)`;
+      ctx.lineWidth   = 4;
+      ctx.lineJoin    = 'round';
+      ctx.beginPath();
+      for (let i = 0; i < bufLen; i++) {
+        const x = i * step;
+        const y = cy - data[i] * usable / 2;
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+
+      // Main waveform line
+      ctx.strokeStyle = `rgba(${rP},${gP},${bP},0.92)`;
+      ctx.lineWidth   = 1.3;
+      ctx.beginPath();
+      for (let i = 0; i < bufLen; i++) {
+        const x = i * step;
+        const y = cy - data[i] * usable / 2;
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+
+      // Channel label (top-left)
+      ctx.font      = 'bold 10px monospace';
+      ctx.fillStyle = `rgba(${rP},${gP},${bP},0.55)`;
+      ctx.textAlign = 'left';
+      ctx.fillText(label, 5, yBase + 13);
+    };
+
+    drawWave(dataL,          0,     108, 99,  255, 'L');
+    drawWave(dataR || dataL, halfH, 78,  204, 163, 'R');
+
+    // Channel divider
+    ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+    ctx.lineWidth   = 1;
+    ctx.beginPath(); ctx.moveTo(0, halfH); ctx.lineTo(W, halfH); ctx.stroke();
+  }
+
+  _drawPlayerVuMeter() {
+    const canvas = this._playerVuCanvas;
+    if (!canvas || !this._analyserL) return;
+
+    const dpr  = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    canvas.width  = Math.round(rect.width  * dpr);
+    canvas.height = Math.round(rect.height * dpr);
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+    const W = rect.width, H = rect.height;
+
+    // Rounded-rect background
+    ctx.clearRect(0, 0, W, H);
+    const R = 5;
+    ctx.fillStyle = 'rgba(6,6,14,0.78)';
+    ctx.beginPath();
+    ctx.moveTo(R, 0); ctx.lineTo(W - R, 0); ctx.arcTo(W, 0,  W,   R,   R);
+    ctx.lineTo(W, H - R); ctx.arcTo(W, H,  W-R, H,   R);
+    ctx.lineTo(R, H); ctx.arcTo(0, H,   0,   H-R, R);
+    ctx.lineTo(0, R); ctx.arcTo(0, 0,   R,   0,   R);
+    ctx.closePath();
+    ctx.fill();
+
+    const DB_MIN = -60, DB_MAX = 0;
+    const LBL_H  = 13, PT = 4, PL = 4, PR = 4, GAP = 3;
+    const mH     = H - LBL_H - PT;
+    const barW   = (W - PL - PR - GAP) / 2;
+    const lX     = PL;
+    const rX     = PL + barW + GAP;
+    const dbFrac = db => (Math.max(DB_MIN, Math.min(DB_MAX, db)) - DB_MIN) / (DB_MAX - DB_MIN);
+
+    // Read RMS
+    const bufLen = this._analyserL.frequencyBinCount;
+    const dataL  = new Float32Array(bufLen);
+    const dataR  = this._analyserR ? new Float32Array(bufLen) : null;
+    this._analyserL.getFloatTimeDomainData(dataL);
+    if (dataR) this._analyserR.getFloatTimeDomainData(dataR);
+    const rmsOf  = d => { let s = 0; for (let i = 0; i < d.length; i++) s += d[i]*d[i]; return Math.sqrt(s/d.length); };
+    const toDb   = v => v > 1e-9 ? 20 * Math.log10(v) : -Infinity;
+    const rmsDbL = toDb(rmsOf(dataL));
+    const rmsDbR = dataR ? toDb(rmsOf(dataR)) : rmsDbL;
+
+    const drawBar = (x, db, label) => {
+      // Track
+      ctx.fillStyle = 'rgba(255,255,255,0.06)';
+      ctx.fillRect(x, PT, barW, mH);
+      // Fill
+      const fillH = mH * dbFrac(db);
+      if (fillH > 0.5) {
+        const grad = ctx.createLinearGradient(0, PT + mH, 0, PT);
+        grad.addColorStop(0,   '#166534');
+        grad.addColorStop(0.5, '#16a34a');
+        grad.addColorStop(0.72,'#ca8a04');
+        grad.addColorStop(0.88,'#ea580c');
+        grad.addColorStop(1.0, '#b91c1c');
+        ctx.fillStyle = grad;
+        ctx.fillRect(x, PT + mH - fillH, barW, fillH);
+      }
+      // Label
+      ctx.font      = 'bold 8px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = 'rgba(255,255,255,0.45)';
+      ctx.fillText(label, x + barW / 2, H - 3);
+    };
+
+    drawBar(lX, rmsDbL, 'L');
+    drawBar(rX, rmsDbR, 'R');
   }
 
   // ── Stats poll ────────────────────────────────────────────────────────────
@@ -370,6 +884,8 @@ class StreamAnalyzer {
     this._activeTab=tab;
     this._tabBtns.forEach(b=>b.classList.toggle('az-tab--active',b.dataset.tab===tab));
     Object.entries(this._views).forEach(([k,el])=>{ if(el) el.style.display=k===tab?'flex':'none'; });
+
+    if(tab==='audio') this._setupAudioContext();
 
     if(!this._player) return;
     const stats=this._player.getStats();
@@ -550,9 +1066,9 @@ class StreamAnalyzer {
         // Store master + show children button if this is a master playlist
         this._masterManifest={url,text,isHLS:true};
         const isMaster=text.includes('#EXT-X-STREAM-INF');
-        if(childBtn && isMaster){
-          childBtn.style.display='';
-        }
+        if(childBtn && isMaster) childBtn.style.display='';
+        const tagsBtn=document.getElementById('azTagsBtn');
+        if(tagsBtn){tagsBtn.disabled=false;tagsBtn.title='';}
       } else if(isDASH){
         raw.innerHTML=this._highlightMPD(text);
         tree.innerHTML=this._parseMPDTree(text);
@@ -669,6 +1185,262 @@ class StreamAnalyzer {
     if (statEl) { statEl.textContent = `${ok}/${results.length} children loaded`; statEl.style.display = ''; }
     btn.disabled = false;
     btn.textContent = '⬇ All Children';
+
+    // Enable View All and Play All buttons
+    const viewAllBtn = document.getElementById('azViewAll');
+    const playAllBtn = document.getElementById('azPlayAll');
+    const variantOk  = results.filter(r => r.type === 'variant' && !r.error).length;
+    if (viewAllBtn && results.length > 0) { viewAllBtn.disabled = false; viewAllBtn.title = ''; }
+    if (playAllBtn && variantOk > 0)      { playAllBtn.disabled = false; playAllBtn.title = ''; }
+
+    // Discontinuities and ad cues live in media playlists, not the master.
+    // Parse markers from the first successfully fetched variant child.
+    if (window.AdMarkers) {
+      const firstVariant = results.find(r => r.type === 'variant' && !r.error && r.text);
+      if (firstVariant) {
+        const { markers } = window.AdMarkers.parseHLSMarkers(firstVariant.text);
+        this._adMarkers = [
+          ...markers,
+          ...this._timelineRegions.map(r => ({
+            type: 'event', time: r.startTime, duration: (r.endTime || r.startTime) - r.startTime,
+            label: `Timeline Region [${r.schemeIdUri || ''}]`, source: 'shaka',
+          })),
+        ].sort((a, b) => a.time - b.time);
+        this._renderMarkers();
+        this._updateMarkerSummary();
+      }
+    }
+
+    // Detect mismatches across all fetched children
+    this._renderMismatches(this._detectMismatches());
+  }
+
+  _parseMismatchMeta(variant) {
+    const lines = (variant.text || '').split('\n');
+    let version = null, targetDuration = null, playlistType = null;
+    let hasEndList = false, encryption = 'NONE';
+    let segCount = 0, totalDur = 0, maxSeg = 0, pendingDur = null;
+
+    for (const raw of lines) {
+      const line = raw.trim();
+      if (!line) continue;
+      if (line === '#EXT-X-ENDLIST')                { hasEndList = true; }
+      else if (line.startsWith('#EXT-X-VERSION:'))   { version = parseInt(line.split(':')[1], 10); }
+      else if (line.startsWith('#EXT-X-TARGETDURATION:')) { targetDuration = parseFloat(line.split(':')[1]); }
+      else if (line.startsWith('#EXT-X-PLAYLIST-TYPE:')) { playlistType = line.split(':')[1].trim(); }
+      else if (line.startsWith('#EXT-X-KEY:'))       {
+        const m = line.match(/METHOD=([^,\s]+)/i);
+        if (m) encryption = m[1].toUpperCase();
+      }
+      else if (line.startsWith('#EXTINF:'))          { pendingDur = parseFloat(line.split(':')[1].split(',')[0]); }
+      else if (!line.startsWith('#') && pendingDur != null) {
+        segCount++; totalDur += pendingDur;
+        if (pendingDur > maxSeg) maxSeg = pendingDur;
+        pendingDur = null;
+      }
+    }
+    return {
+      label: variant.label, url: variant.url,
+      version, targetDuration, playlistType, hasEndList, encryption,
+      segCount, totalDur: Math.round(totalDur * 1000) / 1000, maxSeg,
+      codecs: variant.codecs || null,
+    };
+  }
+
+  _detectMismatches() {
+    const variants = this._childManifests.filter(c => c.type === 'variant' && !c.error && c.text);
+    if (variants.length < 2) return [];
+
+    const parsed = variants.map(v => this._parseMismatchMeta(v));
+    const issues = [];
+
+    const mostCommon = arr => {
+      const cnt = {};
+      for (const v of arr) cnt[String(v)] = (cnt[String(v)] || 0) + 1;
+      return Object.entries(cnt).sort((a, b) => b[1] - a[1])[0][0];
+    };
+    const rows = (field, fmt = v => String(v), expected) =>
+      parsed.map(p => ({
+        label: p.label,
+        value: p[field] != null ? fmt(p[field]) : '—',
+        diff:  p[field] != null && String(p[field]) !== expected,
+      }));
+
+    // 1 · EXT-X-TARGETDURATION
+    const tdVals = parsed.map(p => p.targetDuration).filter(v => v != null);
+    const tdSet  = [...new Set(tdVals)];
+    if (tdSet.length > 1) {
+      const exp = mostCommon(tdVals);
+      issues.push({ severity: 'error',
+        title: 'EXT-X-TARGETDURATION mismatch',
+        detail: `Values: ${tdSet.join('s, ')}s — all variants must declare the same target duration (RFC 8216 §4.4.3.1)`,
+        rows: parsed.map(p => ({ label: p.label, value: p.targetDuration != null ? p.targetDuration + 's' : '—', diff: p.targetDuration != null && String(p.targetDuration) !== exp })),
+      });
+    }
+
+    // 2 · Missing EXT-X-TARGETDURATION
+    const noTd = parsed.filter(p => p.targetDuration == null);
+    if (noTd.length)
+      issues.push({ severity: 'error',
+        title: 'Missing EXT-X-TARGETDURATION',
+        detail: `${noTd.length} variant(s) omit the mandatory #EXT-X-TARGETDURATION tag`,
+        rows: noTd.map(p => ({ label: p.label, value: 'missing', diff: true })),
+      });
+
+    // 3 · EXT-X-VERSION
+    const verVals = parsed.map(p => p.version).filter(v => v != null);
+    const verSet  = [...new Set(verVals)];
+    if (verSet.length > 1) {
+      const exp = mostCommon(verVals);
+      issues.push({ severity: 'warning',
+        title: 'EXT-X-VERSION mismatch',
+        detail: `HLS versions differ: ${verSet.map(v => 'v' + v).join(', ')}`,
+        rows: parsed.map(p => ({ label: p.label, value: p.version != null ? 'v' + p.version : 'not set', diff: p.version != null && String(p.version) !== exp })),
+      });
+    }
+
+    // 4 · Total duration (VOD only)
+    const vod = parsed.filter(p => p.hasEndList && p.totalDur > 0);
+    if (vod.length >= 2) {
+      const durs  = vod.map(p => p.totalDur);
+      const minD  = Math.min(...durs), maxD = Math.max(...durs);
+      if (maxD - minD > 0.5)
+        issues.push({ severity: 'warning',
+          title: 'Total duration mismatch',
+          detail: `VOD durations differ by up to ${(maxD - minD).toFixed(3)}s (${((maxD / minD - 1) * 100).toFixed(1)}% spread)`,
+          rows: parsed.map(p => ({ label: p.label, value: p.totalDur > 0 ? p.totalDur.toFixed(3) + 's' : '—', diff: p.hasEndList && Math.abs(p.totalDur - maxD) > 0.5 })),
+        });
+    }
+
+    // 5 · Segment count (VOD only)
+    const vodC = parsed.filter(p => p.hasEndList && p.segCount > 0);
+    if (vodC.length >= 2) {
+      const counts = vodC.map(p => p.segCount);
+      const minC = Math.min(...counts), maxC = Math.max(...counts);
+      if (maxC !== minC) {
+        const exp = mostCommon(counts);
+        issues.push({ severity: 'warning',
+          title: 'Segment count mismatch',
+          detail: `Segment counts range from ${minC} to ${maxC}`,
+          rows: parsed.map(p => ({ label: p.label, value: p.hasEndList ? p.segCount + ' segs' : '—', diff: p.hasEndList && String(p.segCount) !== exp })),
+        });
+      }
+    }
+
+    // 6 · Max EXTINF > TARGETDURATION (per variant)
+    for (const p of parsed)
+      if (p.targetDuration != null && p.maxSeg > p.targetDuration + 0.5)
+        issues.push({ severity: 'error',
+          title: 'Segment exceeds TARGETDURATION',
+          detail: `${p.label}: longest segment ${p.maxSeg.toFixed(3)}s > declared ${p.targetDuration}s (HLS spec violation)`,
+          rows: [{ label: p.label, value: p.maxSeg.toFixed(3) + 's', diff: true }],
+        });
+
+    // 7 · Encryption inconsistency
+    const encSet = [...new Set(parsed.map(p => p.encryption))];
+    if (encSet.length > 1) {
+      const hasClear = encSet.includes('NONE'), hasEnc = encSet.some(t => t !== 'NONE');
+      issues.push({ severity: hasClear && hasEnc ? 'error' : 'warning',
+        title: hasClear && hasEnc ? 'Encryption inconsistency — mixed clear and encrypted' : 'Encryption method mismatch',
+        detail: `Methods found: ${encSet.join(', ')}`,
+        rows: parsed.map(p => ({ label: p.label, value: p.encryption, diff: p.encryption === 'NONE' ? hasEnc : hasClear })),
+      });
+    }
+
+    // 8 · Playlist type inconsistency
+    const ptSet = [...new Set(parsed.map(p => p.playlistType || 'not set'))];
+    if (ptSet.length > 1) {
+      const exp = mostCommon(parsed.map(p => p.playlistType || 'not set'));
+      issues.push({ severity: 'warning',
+        title: 'EXT-X-PLAYLIST-TYPE inconsistency',
+        detail: `Types found: ${ptSet.join(', ')}`,
+        rows: parsed.map(p => ({ label: p.label, value: p.playlistType || 'not set', diff: (p.playlistType || 'not set') !== exp })),
+      });
+    }
+
+    // 9 · Missing EXT-X-ENDLIST on some (but not all) VOD variants
+    const anyEnd = parsed.some(p => p.hasEndList);
+    const noEnd  = parsed.filter(p => !p.hasEndList);
+    if (anyEnd && noEnd.length)
+      issues.push({ severity: 'warning',
+        title: 'Missing EXT-X-ENDLIST on some variants',
+        detail: `${noEnd.length} variant(s) lack #EXT-X-ENDLIST while others have it`,
+        rows: parsed.map(p => ({ label: p.label, value: p.hasEndList ? '✓ present' : '✗ missing', diff: !p.hasEndList })),
+      });
+
+    // 10 · Codec family mismatch (from master CODECS= attribute)
+    const families = parsed.map(p => {
+      if (!p.codecs) return null;
+      const c = p.codecs.toLowerCase();
+      if (c.includes('hvc1') || c.includes('hev1')) return 'HEVC';
+      if (c.includes('av01')) return 'AV1';
+      if (c.includes('avc1') || c.includes('avc3')) return 'H.264';
+      return p.codecs.split(',')[0].trim();
+    });
+    const famSet = [...new Set(families.filter(Boolean))];
+    if (famSet.length > 1)
+      issues.push({ severity: 'warning',
+        title: 'Codec family mismatch across variants',
+        detail: `Declared codec families: ${famSet.join(', ')} — verify intended multi-codec ladder`,
+        rows: parsed.map((p, i) => ({ label: p.label, value: families[i] || (p.codecs || '—'), diff: false })),
+      });
+
+    return issues;
+  }
+
+  _renderMismatches(issues) {
+    const panel  = document.getElementById('azMismatchPanel');
+    const body   = document.getElementById('azMismatchBody');
+    const badge  = document.getElementById('azMismatchBadge');
+    const btn    = document.getElementById('azMismatchBtn');
+    const count  = document.getElementById('azMismatchCount');
+    if (!panel || !body) return;
+
+    const n = issues.length;
+    if (badge) badge.textContent = n;
+    if (btn)   btn.style.display = n > 0 ? '' : 'none';
+    if (count) count.textContent = `${n} issue${n !== 1 ? 's' : ''}`;
+
+    if (n === 0) { panel.style.display = 'none'; return; }
+
+    body.innerHTML = '';
+    for (const mm of issues) {
+      const item = document.createElement('div');
+      item.className = 'az-mm-item';
+
+      const sev = document.createElement('span');
+      sev.className   = `az-mm-sev az-mm-sev--${mm.severity}`;
+      sev.textContent = mm.severity.toUpperCase();
+
+      const info = document.createElement('div');
+      info.className  = 'az-mm-info';
+
+      const title = document.createElement('div');
+      title.className   = 'az-mm-item-title';
+      title.textContent = mm.title;
+
+      const detail = document.createElement('div');
+      detail.className   = 'az-mm-detail';
+      detail.textContent = mm.detail;
+
+      info.append(title, detail);
+
+      if (mm.rows?.length) {
+        const vals = document.createElement('div');
+        vals.className = 'az-mm-vals';
+        for (const r of mm.rows) {
+          const pill = document.createElement('span');
+          pill.className   = 'az-mm-pill' + (r.diff ? ' az-mm-pill--diff' : '');
+          pill.textContent = `${r.label}: ${r.value}`;
+          vals.appendChild(pill);
+        }
+        info.appendChild(vals);
+      }
+
+      item.append(sev, info);
+      body.appendChild(item);
+    }
+    panel.style.display = '';
   }
 
   _updateManifestSelector() {
@@ -687,6 +1459,9 @@ class StreamAnalyzer {
     this._selectedManifestIdx = idx;
     const raw  = document.getElementById('azManifestContent');
     const tree = document.getElementById('azManifestTree');
+
+    // If tags view is open, refresh it for the new selection
+    if (this._tagsViewActive) { this._refreshTagsView(); return; }
 
     if (idx < 0 || !this._childManifests[idx]) {
       if (this._masterManifest) {
@@ -708,6 +1483,20 @@ class StreamAnalyzer {
     }
     raw.innerHTML  = this._highlightHLS(child.text);
     tree.innerHTML = this._parseChildTree(child);
+
+    // Update ad markers / discontinuities for this media playlist
+    if (window.AdMarkers && child.text) {
+      const { markers } = window.AdMarkers.parseHLSMarkers(child.text);
+      this._adMarkers = [
+        ...markers,
+        ...this._timelineRegions.map(r => ({
+          type: 'event', time: r.startTime, duration: (r.endTime || r.startTime) - r.startTime,
+          label: `Timeline Region [${r.schemeIdUri || ''}]`, source: 'shaka',
+        })),
+      ].sort((a, b) => a.time - b.time);
+      this._renderMarkers();
+      this._updateMarkerSummary();
+    }
   }
 
   _parseChildTree(child) {
@@ -735,6 +1524,450 @@ class StreamAnalyzer {
     }
     if (child.codecs) html += this._treeChild('🎬', `Codecs: ${child.codecs}`);
     return html + '</div>';
+  }
+
+  // ── View-All manifest grid ────────────────────────────────────────────────
+  _toggleViewAll() {
+    const btn  = document.getElementById('azViewAll');
+    const tree = document.getElementById('azManifestTree');
+    const raw  = document.getElementById('azManifestContent');
+    const grid = document.getElementById('azManifestGrid');
+    if (!grid || !tree || !raw) return;
+    this._viewAllActive = !this._viewAllActive;
+    if (this._viewAllActive) {
+      tree.style.display = 'none';
+      raw.style.display  = 'none';
+      grid.style.display = '';
+      grid.innerHTML     = '';
+      if (btn) btn.textContent = '⊡ Single View';
+      this._buildManifestGrid(grid);
+    } else {
+      tree.style.display = '';
+      raw.style.display  = '';
+      grid.style.display = 'none';
+      grid.innerHTML     = '';
+      if (btn) btn.textContent = '⊞ View All';
+      this._showSelectedManifest(this._selectedManifestIdx);
+    }
+  }
+
+  _buildManifestGrid(grid) {
+    const items = [];
+    if (this._masterManifest) {
+      items.push({ label: '🗂 Master Manifest', text: this._masterManifest.text, isHLS: this._masterManifest.isHLS, error: null });
+    }
+    this._childManifests.forEach(c => {
+      items.push({ label: c.label, text: c.text, isHLS: true, error: c.error });
+    });
+    if (!items.length) {
+      grid.innerHTML = '<div style="padding:16px;color:var(--text-dim);font-size:12px">No manifests loaded — fetch children first.</div>';
+      return;
+    }
+    items.forEach(item => {
+      const card = document.createElement('div');
+      card.className = 'az-mg-card' + (item.error ? ' az-mg-card--error' : '');
+      const hdr = document.createElement('div');
+      hdr.className = 'az-mg-header';
+      hdr.textContent = item.label;
+      card.appendChild(hdr);
+      const body = document.createElement('div');
+      body.className = 'az-mg-body';
+      if (item.error) {
+        body.innerHTML = `<div style="padding:10px;color:var(--red);font-size:11px">⚠ ${esc(item.error)}</div>`;
+      } else {
+        const treeDiv = document.createElement('div');
+        treeDiv.className = 'az-mg-tree';
+        treeDiv.innerHTML = item.isHLS ? this._parseHLSTree(item.text) : this._parseMPDTree(item.text);
+        const rawPre = document.createElement('pre');
+        rawPre.className = 'az-mg-raw';
+        rawPre.innerHTML = item.isHLS ? this._highlightHLS(item.text) : this._highlightMPD(item.text);
+        body.appendChild(treeDiv);
+        body.appendChild(rawPre);
+      }
+      card.appendChild(body);
+      grid.appendChild(card);
+    });
+  }
+
+  // ── HLS Tags view ────────────────────────────────────────────────────────
+  _toggleTagsView() {
+    const btn  = document.getElementById('azTagsBtn');
+    const tree = document.getElementById('azManifestTree');
+    const raw  = document.getElementById('azManifestContent');
+    const grid = document.getElementById('azManifestGrid');
+    const tv   = document.getElementById('azTagsView');
+    if (!tv) return;
+    this._tagsViewActive = !this._tagsViewActive;
+    if (this._tagsViewActive) {
+      // Exit view-all if it was open
+      if (this._viewAllActive) {
+        this._viewAllActive = false;
+        const vab = document.getElementById('azViewAll');
+        if (vab) vab.textContent = '⊞ View All';
+        if (grid) { grid.style.display = 'none'; grid.innerHTML = ''; }
+      }
+      tree.style.display = 'none';
+      raw.style.display  = 'none';
+      tv.style.display   = '';
+      if (btn) btn.textContent = '✕ Tags';
+      this._refreshTagsView();
+    } else {
+      tree.style.display = '';
+      raw.style.display  = '';
+      tv.style.display   = 'none';
+      tv.innerHTML       = '';
+      if (btn) btn.textContent = '🏷 Tags';
+      this._showSelectedManifest(this._selectedManifestIdx);
+    }
+  }
+
+  _refreshTagsView() {
+    const tv = document.getElementById('azTagsView');
+    if (!tv) return;
+    const idx = this._selectedManifestIdx;
+    let text = null, label = '';
+    if (idx >= 0 && this._childManifests[idx] && !this._childManifests[idx].error) {
+      text  = this._childManifests[idx].text;
+      label = this._childManifests[idx].label;
+    } else if (this._masterManifest) {
+      text  = this._masterManifest.text;
+      label = '🗂 Master Manifest';
+    }
+    tv.innerHTML = text ? this._buildTagsTable(text, label) : '<div style="padding:16px;color:var(--text-dim)">No manifest loaded.</div>';
+  }
+
+  _buildTagsTable(text, label) {
+    const lines = text.split('\n');
+    const tagMap = new Map(); // tagName → string[]
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (!line.startsWith('#')) continue;
+      const colon   = line.indexOf(':');
+      const tagName = colon > 0 ? line.slice(1, colon) : line.slice(1);
+      const value   = colon > 0 ? line.slice(colon + 1) : '';
+      if (!tagMap.has(tagName)) tagMap.set(tagName, []);
+      tagMap.get(tagName).push(value);
+    }
+
+    // Bucket into categories
+    const cats = {};
+    for (const [tag, values] of tagMap) {
+      const def = HLS_TAG_DEFS[tag] || { cat: 'Custom / Extension', desc: 'Non-standard or proprietary extension tag' };
+      if (!cats[def.cat]) cats[def.cat] = [];
+      cats[def.cat].push({ tag, values, desc: def.desc });
+    }
+    // Sort tags within each category alphabetically
+    for (const cat of Object.keys(cats)) cats[cat].sort((a, b) => a.tag.localeCompare(b.tag));
+
+    const totalTags = tagMap.size;
+    const totalLines = [...tagMap.values()].reduce((s, v) => s + v.length, 0);
+
+    let html = `<div class="az-tags-header">`;
+    html += `<span class="az-tags-title">${esc(label || 'Manifest')}</span>`;
+    html += `<span class="az-tags-meta">${totalTags} unique tag${totalTags !== 1 ? 's' : ''} · ${totalLines} occurrences</span>`;
+    html += `</div>`;
+
+    const catOrder = [...HLS_CAT_ORDER];
+    // Append any categories not in the predefined order
+    for (const cat of Object.keys(cats)) {
+      if (!catOrder.includes(cat)) catOrder.push(cat);
+    }
+
+    for (const cat of catOrder) {
+      if (!cats[cat]) continue;
+      html += `<div class="az-tags-section">`;
+      html += `<div class="az-tags-section-hdr">${esc(cat)}</div>`;
+      html += `<table class="az-tags-table"><thead><tr><th>Tag</th><th>Value(s)</th><th>Description</th></tr></thead><tbody>`;
+      for (const { tag, values, desc } of cats[cat]) {
+        const multi = values.length > 1;
+        // First row
+        html += `<tr class="az-tags-row${multi ? ' az-tags-multi' : ''}">`;
+        html += `<td class="az-tags-name" rowspan="${values.length}">#${esc(tag)}`;
+        if (multi) html += ` <span class="az-tags-badge">×${values.length}</span>`;
+        html += `</td>`;
+        html += `<td class="az-tags-val">${values[0] ? `<code>${esc(values[0])}</code>` : '<span class="az-tags-empty">—</span>'}</td>`;
+        html += `<td class="az-tags-desc" rowspan="${values.length}">${esc(desc)}</td></tr>`;
+        // Extra rows for repeated tags
+        for (let i = 1; i < values.length; i++) {
+          html += `<tr class="az-tags-row az-tags-extra"><td class="az-tags-val"><code>${esc(values[i])}</code></td></tr>`;
+        }
+      }
+      html += `</tbody></table></div>`;
+    }
+
+    return html;
+  }
+
+  // ── Multi-player playback ─────────────────────────────────────────────────
+  async _openPlayAll() {
+    const variants = this._childManifests.filter(c => c.type === 'variant' && !c.error);
+    if (!variants.length) return;
+
+    const overlay = document.getElementById('azMultiplayOverlay');
+    const gridEl  = document.getElementById('azMultiplayGrid');
+    const statEl  = document.getElementById('azMpStatus');
+    const muteBtn = document.getElementById('azMpMute');
+
+    overlay.style.display = '';
+    gridEl.innerHTML = '';
+    this._multiPlayers = [];
+    this._mpMuted = true;
+    if (muteBtn) muteBtn.textContent = '🔊 Unmute All';
+
+    // Create one shared AudioContext for all ladder instances
+    this._stopMpAudioAnimation();
+    try { this._mpAudioCtx?.close(); } catch {}
+    try { this._mpAudioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch { this._mpAudioCtx = null; }
+
+    const n    = variants.length;
+    const cols = n === 1 ? 1 : n <= 2 ? 2 : n <= 4 ? 2 : n <= 6 ? 3 : n <= 9 ? 3 : 4;
+    const rows = Math.ceil(n / cols);
+    gridEl.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+    gridEl.style.gridTemplateRows    = `repeat(${rows}, 1fr)`;
+
+    if (statEl) statEl.textContent = `Loading ${n} stream${n > 1 ? 's' : ''}…`;
+
+    const entries = variants.map(variant => {
+      const cell    = document.createElement('div');
+      cell.className = 'az-mp-cell';
+      const videoEl  = document.createElement('video');
+      videoEl.setAttribute('playsinline', '');
+      videoEl.muted  = true;
+      const label    = document.createElement('div');
+      label.className = 'az-mp-label';
+      label.textContent = variant.label.replace(/^[\u{1F4FA}\u{1F50A}\u{1F4DD}\u{1F4AC}\u{1F4CB}]\s*/u, '').trim();
+      const spinner  = document.createElement('div');
+      spinner.className = 'az-mp-spin';
+      spinner.textContent = '↻';
+      cell.appendChild(videoEl);
+      cell.appendChild(label);
+      cell.appendChild(spinner);
+      // Per-cell audio controls (revealed on hover)
+      const ctrlBar   = document.createElement('div');
+      ctrlBar.className = 'mp-ctrl-bar';
+      const muteBtn   = document.createElement('button');
+      muteBtn.className = 'mp-ctrl-mute';
+      muteBtn.textContent = '🔇';
+      muteBtn.title   = 'Mute / Unmute';
+      const volSlider = document.createElement('input');
+      volSlider.type  = 'range';
+      volSlider.className = 'mp-ctrl-vol';
+      volSlider.min = '0'; volSlider.max = '100'; volSlider.value = '80';
+      ctrlBar.appendChild(muteBtn);
+      ctrlBar.appendChild(volSlider);
+      cell.appendChild(ctrlBar);
+      muteBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        videoEl.muted = !videoEl.muted;
+        muteBtn.textContent = videoEl.muted ? '🔇' : '🔊';
+      });
+      volSlider.addEventListener('input', e => {
+        e.stopPropagation();
+        videoEl.volume = parseInt(e.target.value, 10) / 100;
+        if (videoEl.muted && videoEl.volume > 0) {
+          videoEl.muted = false;
+          muteBtn.textContent = '🔊';
+        }
+      });
+      gridEl.appendChild(cell);
+      return { variant, cell, videoEl, label, spinner, muteBtn, sp: null };
+    });
+    this._multiPlayers = entries;
+
+    let loadedCount = 0;
+    await Promise.all(entries.map(async entry => {
+      const { variant, cell, videoEl, label, spinner } = entry;
+      try {
+        shaka.polyfill.installAll();
+        const sp = new shaka.Player(videoEl);
+        entry.sp = sp;
+        sp.configure({
+          streaming: { bufferingGoal: 15, rebufferingGoal: 3, bufferBehind: 10 },
+          abr: { enabled: true },
+        });
+        sp.addEventListener('error', evt => {
+          spinner.style.display = 'none';
+          if (!cell.querySelector('.az-mp-err')) {
+            const d = document.createElement('div');
+            d.className = 'az-mp-err';
+            d.textContent = `⚠ ${evt.detail?.message || 'Playback error'}`;
+            cell.appendChild(d);
+          }
+        });
+        sp.addEventListener('buffering', evt => { spinner.style.display = evt.buffering ? '' : 'none'; });
+        videoEl.addEventListener('canplay', () => { spinner.style.display = 'none'; }, { once: true });
+        await sp.load(variant.url);
+        videoEl.play().catch(() => {});
+        this._setupMpAudioNode(entry);
+        loadedCount++;
+      } catch (err) {
+        spinner.style.display = 'none';
+        if (!cell.querySelector('.az-mp-err')) {
+          const d = document.createElement('div');
+          d.className = 'az-mp-err';
+          d.textContent = `⚠ ${err.message || String(err)}`;
+          cell.appendChild(d);
+          label.style.display = 'none';
+        }
+      }
+      if (statEl) statEl.textContent = `${loadedCount}/${n} loaded`;
+    }));
+
+    if (statEl) statEl.textContent = `${loadedCount}/${n} streams ready`;
+    this._startMpAudioAnimation();
+  }
+
+  _closePlayAll() {
+    this._stopMpAudioAnimation();
+    const overlay = document.getElementById('azMultiplayOverlay');
+    if (overlay) overlay.style.display = 'none';
+    for (const { sp, videoEl } of (this._multiPlayers || [])) {
+      try { videoEl?.pause(); }  catch {}
+      try { sp?.destroy(); }     catch {}
+    }
+    try { this._mpAudioCtx?.close(); } catch {}
+    this._mpAudioCtx = null;
+    this._multiPlayers = [];
+    const gridEl = document.getElementById('azMultiplayGrid');
+    if (gridEl) gridEl.innerHTML = '';
+  }
+
+  _mpPlayAll()  { for (const { videoEl } of this._multiPlayers) videoEl?.play().catch(() => {}); }
+  _mpPauseAll() { for (const { videoEl } of this._multiPlayers) { try { videoEl?.pause(); } catch {} } }
+
+  _mpToggleMute() {
+    this._mpMuted = !this._mpMuted;
+    const btn = document.getElementById('azMpMute');
+    for (const { videoEl, muteBtn } of this._multiPlayers) {
+      if (videoEl) videoEl.muted = this._mpMuted;
+      if (muteBtn) muteBtn.textContent = this._mpMuted ? '🔇' : '🔊';
+    }
+    if (btn) btn.textContent = this._mpMuted ? '🔊 Unmute All' : '🔇 Mute All';
+  }
+
+  _mpSyncAll() {
+    const ref = this._multiPlayers.find(p => p.videoEl && isFinite(p.videoEl.currentTime) && p.videoEl.currentTime > 0);
+    if (!ref) return;
+    const t = ref.videoEl.currentTime;
+    for (const { videoEl } of this._multiPlayers) {
+      if (videoEl && videoEl !== ref.videoEl && isFinite(videoEl.duration)) {
+        try { videoEl.currentTime = t; } catch {}
+      }
+    }
+  }
+
+  // ── Multi-play per-instance audio ─────────────────────────────────────────
+  _setupMpAudioNode(entry) {
+    if (!this._mpAudioCtx || !entry.videoEl) return;
+    try {
+      const ctx      = this._mpAudioCtx;
+      const src      = ctx.createMediaElementSource(entry.videoEl);
+      src.connect(ctx.destination);                         // keep audio playing
+      const splitter = ctx.createChannelSplitter(2);
+      const aL       = ctx.createAnalyser();
+      const aR       = ctx.createAnalyser();
+      aL.fftSize     = 1024;                               // bufLen = 512
+      aR.fftSize     = 1024;
+      src.connect(splitter);
+      splitter.connect(aL, 0);
+      splitter.connect(aR, 1);
+      entry.analyserL = aL;
+      entry.analyserR = aR;
+      // Inject VU canvas into cell
+      const vc       = document.createElement('canvas');
+      vc.className   = 'mp-vu-canvas';
+      entry.cell.appendChild(vc);
+      entry.vuCanvas = vc;
+    } catch { /* setup failed silently */ }
+  }
+
+  _startMpAudioAnimation() {
+    this._stopMpAudioAnimation();
+    const draw = () => {
+      if (this._mpAudioCtx?.state === 'suspended') this._mpAudioCtx.resume().catch(() => {});
+      for (const entry of this._multiPlayers) {
+        if (entry.vuCanvas && entry.analyserL) {
+          this._drawMpVuMeter(entry.vuCanvas, entry.analyserL, entry.analyserR);
+        }
+      }
+      this._mpAudioAnimFrame = requestAnimationFrame(draw);
+    };
+    this._mpAudioAnimFrame = requestAnimationFrame(draw);
+  }
+
+  _stopMpAudioAnimation() {
+    if (this._mpAudioAnimFrame) {
+      cancelAnimationFrame(this._mpAudioAnimFrame);
+      this._mpAudioAnimFrame = null;
+    }
+  }
+
+  _drawMpVuMeter(canvas, analyserL, analyserR) {
+    const dpr  = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    canvas.width  = Math.round(rect.width  * dpr);
+    canvas.height = Math.round(rect.height * dpr);
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+    const W = rect.width, H = rect.height;
+
+    // Rounded background
+    const R = 3;
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = 'rgba(5,5,12,0.80)';
+    ctx.beginPath();
+    ctx.moveTo(R, 0); ctx.lineTo(W - R, 0); ctx.arcTo(W, 0,  W,   R,   R);
+    ctx.lineTo(W, H - R); ctx.arcTo(W, H,  W-R, H,   R);
+    ctx.lineTo(R, H); ctx.arcTo(0, H,  0,   H-R, R);
+    ctx.lineTo(0, R); ctx.arcTo(0, 0,  R,   0,   R);
+    ctx.closePath(); ctx.fill();
+
+    const DB_MIN = -60, DB_MAX = 0;
+    const PT = 3, PB = 3, PL = 3, PR = 3, GAP = 2;
+    const mH   = H - PT - PB;
+    const barW = (W - PL - PR - GAP) / 2;
+    const lX   = PL;
+    const rX   = PL + barW + GAP;
+    const dbFrac = db => (Math.max(DB_MIN, Math.min(DB_MAX, db)) - DB_MIN) / (DB_MAX - DB_MIN);
+
+    const bufLen = analyserL.frequencyBinCount;
+    const dataL  = new Float32Array(bufLen);
+    const dataR  = analyserR ? new Float32Array(bufLen) : null;
+    analyserL.getFloatTimeDomainData(dataL);
+    if (dataR) analyserR.getFloatTimeDomainData(dataR);
+
+    const rmsOf  = d => { let s = 0; for (let i = 0; i < d.length; i++) s += d[i]*d[i]; return Math.sqrt(s/d.length); };
+    const toDb   = v => v > 1e-9 ? 20 * Math.log10(v) : -Infinity;
+    const rmsDbL = toDb(rmsOf(dataL));
+    const rmsDbR = dataR ? toDb(rmsOf(dataR)) : rmsDbL;
+
+    const drawBar = (x, db) => {
+      ctx.fillStyle = 'rgba(255,255,255,0.06)';
+      ctx.fillRect(x, PT, barW, mH);
+      const fillH = mH * dbFrac(db);
+      if (fillH > 0.5) {
+        const grad = ctx.createLinearGradient(0, PT + mH, 0, PT);
+        grad.addColorStop(0,    '#166534');
+        grad.addColorStop(0.5,  '#16a34a');
+        grad.addColorStop(0.72, '#ca8a04');
+        grad.addColorStop(0.88, '#ea580c');
+        grad.addColorStop(1.0,  '#b91c1c');
+        ctx.fillStyle = grad;
+        ctx.fillRect(x, PT + mH - fillH, barW, fillH);
+      }
+    };
+
+    drawBar(lX, rmsDbL);
+    drawBar(rX, rmsDbR);
+
+    // "L R" micro-label at bottom
+    ctx.font      = '6px monospace';
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    ctx.textAlign = 'center';
+    ctx.fillText('L', lX + barW / 2, H - 1);
+    ctx.fillText('R', rX + barW / 2, H - 1);
   }
 
   // ── Ad Break Monitor ──────────────────────────────────────────────────────

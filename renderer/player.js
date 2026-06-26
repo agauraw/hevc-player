@@ -46,8 +46,6 @@ const wvBadge        = document.getElementById('wv-badge');
 const hevcBadge      = document.getElementById('hevc-badge');
 const drmToggle      = document.getElementById('drmToggle');
 const drmBody        = document.getElementById('drmBody');
-const codecToggle    = document.getElementById('codecToggle');
-const codecBody      = document.getElementById('codecBody');
 const aboutBtn          = document.getElementById('aboutBtn');
 const aboutBackdrop     = document.getElementById('aboutBackdrop');
 const aboutClose        = document.getElementById('aboutClose');
@@ -287,25 +285,20 @@ function collectDrmHeaders() {
   return headers;
 }
 
-function buildCodecPreference() {
-  const p = [];
-  if (document.getElementById('prefHEVC').checked) p.push('hev1','hvc1');
-  if (document.getElementById('prefAV1').checked)  p.push('av01');
-  if (document.getElementById('prefH264').checked) p.push('avc1');
-  return p;
-}
-
 // ── Capability checks ─────────────────────────────────────────────────────────
 async function checkWidevine() {
-  const info = await window.electronAPI.getWidevineInfo();
-  if (info.available) {
-    wvBadge.textContent = `WV ${info.version}`;
-    wvBadge.className   = 'badge badge--on';
-    wvStatusEl.textContent = `Widevine: v${info.version}`;
-  } else {
-    wvBadge.textContent = 'WV –';
-    wvBadge.className   = 'badge badge--warn';
-    wvStatusEl.textContent = 'Widevine: not found (install Chrome)';
+  try {
+    await navigator.requestMediaKeySystemAccess('com.widevine.alpha', [{
+      initDataTypes: ['cenc'],
+      videoCapabilities: [{ contentType: 'video/mp4; codecs="avc1.42E01E"' }],
+    }]);
+    wvBadge.textContent    = 'WV ✓';
+    wvBadge.className      = 'badge badge--on';
+    wvStatusEl.textContent = 'Widevine: available';
+  } catch {
+    wvBadge.textContent    = 'WV –';
+    wvBadge.className      = 'badge badge--warn';
+    wvStatusEl.textContent = 'Widevine: not available (use Chrome/Edge)';
   }
 }
 
@@ -496,8 +489,6 @@ async function loadStream() {
   const licenseUrl = licenseUrlEl.value.trim();
   const drmHeaders = collectDrmHeaders();
   const robustness = wvRobustEl.value;
-  const codecPref  = buildCodecPreference();
-  const bandwidth  = parseInt(document.getElementById('startBandwidth').value, 10) * 1000;
 
   if (!url) { showError('Please enter a stream URL.'); return; }
 
@@ -507,10 +498,6 @@ async function loadStream() {
   setStatus('Loading…');
   setLoadingState(true);
   analyzer.reset();
-
-  // Push DRM auth headers to the Electron main process BEFORE loading so they
-  // are injected at the network-stack level (bypasses Chromium CORS stripping).
-  await window.electronAPI.updateDrmConfig({ licenseUrl, headers: drmHeaders });
 
   try {
     await player.unload();
@@ -524,8 +511,7 @@ async function loadStream() {
         retryParameters: { maxAttempts: 3, baseDelay: 1000, backoffFactor: 2, fuzzFactor: 0.5 },
         hls: { ignoreManifestProgramDateTime: false, useFullSegmentsForStartTime: true },
       },
-      preferredVideoCodecs: codecPref,
-      abr: { enabled: true, defaultBandwidthEstimate: bandwidth },
+      abr: { enabled: true },
     };
 
     if (licenseUrl) {
@@ -745,21 +731,25 @@ document.addEventListener('keydown', e => {
 loadBtn.addEventListener('click', loadStream);
 stopBtn.addEventListener('click', stopPlayback);
 
-browseBtn.addEventListener('click', async () => {
-  const fp = await window.electronAPI.showOpenDialog();
-  if (fp) streamUrlEl.value = `file:///${fp.replace(/\\/g, '/')}`;
+browseBtn.addEventListener('click', () => document.getElementById('filePicker').click());
+document.getElementById('filePicker').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (file) streamUrlEl.value = URL.createObjectURL(file);
+  e.target.value = '';
 });
 
-browseVttBtn.addEventListener('click', async () => {
-  const fp = await window.electronAPI.showOpenVttDialog();
-  if (!fp) return;
-  const uri   = `file:///${fp.replace(/\\/g, '/')}`;
-  const label = fp.split(/[\\/]/).pop();
+browseVttBtn.addEventListener('click', () => document.getElementById('vttFilePicker').click());
+document.getElementById('vttFilePicker').addEventListener('change', async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const uri   = URL.createObjectURL(file);
+  const label = file.name;
   vttUrlEl.value = uri;
   if (player) {
     try { await player.addTextTrackAsync(uri, 'en', 'subtitles', 'text/vtt'); } catch {}
   }
   await loadAndParseVtt(uri, label);
+  e.target.value = '';
 });
 
 loadVttBtn.addEventListener('click', async () => {
@@ -865,7 +855,19 @@ testLicenseBtn.addEventListener('click', async () => {
   testLicenseBtn.disabled = true;
 
   try {
-    const res = await window.electronAPI.testLicenseServer(url, headers);
+    const res = await (async () => {
+      try {
+        const resp = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/octet-stream', ...headers },
+          body: new Uint8Array(0),
+        });
+        const body = await resp.text().catch(() => '');
+        return { ok: resp.status < 500, status: resp.status, headers: Object.fromEntries(resp.headers), body: body.substring(0, 400) };
+      } catch (err) {
+        return { ok: false, error: err.message };
+      }
+    })();
 
     if (res.error) {
       showLicenseTestResult('fail', `✗ Connection failed: ${res.error}`);
@@ -919,38 +921,13 @@ function setupCollapsible(toggle, body) {
   });
 }
 setupCollapsible(drmToggle, drmBody);
-setupCollapsible(codecToggle, codecBody);
 setupCollapsible(captionsToggle, captionsBody);
-
-// ── Custom window controls ────────────────────────────────────────────────────
-const wcMin   = document.getElementById('wcMin');
-const wcMax   = document.getElementById('wcMax');
-const wcClose = document.getElementById('wcClose');
-
-wcMin.addEventListener('click',   () => window.electronAPI.windowMinimize());
-wcClose.addEventListener('click', () => window.electronAPI.windowClose());
-
-wcMax.addEventListener('click', async () => {
-  window.electronAPI.windowMaximize();
-  // Icon toggles after a tick (maximize is async)
-  setTimeout(syncMaxIcon, 80);
-});
-
-async function syncMaxIcon() {
-  const isMax = await window.electronAPI.windowIsMaximized();
-  // &#xE923; = restore, &#xE922; = maximize (Segoe MDL2)
-  wcMax.innerHTML = isMax ? '&#xE923;' : '&#xE922;';
-  wcMax.title     = isMax ? 'Restore' : 'Maximize';
-}
-
-// Keep icon in sync when maximized by dragging to screen edge etc.
-window.addEventListener('resize', syncMaxIcon);
 
 // ── About modal ───────────────────────────────────────────────────────────────
 aboutBtn.addEventListener('click', () => { aboutBackdrop.style.display = 'flex'; });
 aboutClose.addEventListener('click', () => { aboutBackdrop.style.display = 'none'; });
 aboutBackdrop.addEventListener('click', e => { if (e.target === aboutBackdrop) aboutBackdrop.style.display = 'none'; });
-aboutEmail.addEventListener('click', () => window.electronAPI.openUrl('mailto:gauraw2004amit@gmail.com'));
+aboutEmail.addEventListener('click', () => window.open('mailto:gauraw2004amit@gmail.com'));
 document.addEventListener('keydown', e => {
   if (e.code === 'Escape' && aboutBackdrop.style.display !== 'none') aboutBackdrop.style.display = 'none';
 });

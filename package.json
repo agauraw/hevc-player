@@ -1,20 +1,12 @@
 {
   "name": "gauraw-player",
   "version": "1.0.0",
-  "description": "Gauraw — HEVC/CMAF desktop player with Widevine DRM",
+  "description": "Gauraw — HEVC/CMAF web player with Widevine DRM",
   "author": {
     "name": "Gauraw",
     "email": "gauraw2004amit@gmail.com"
   },
-  "main": "main.js",
   "scripts": {
-    "start": "node scripts/prebuild.js && electron .",
-    "build": "node scripts/prebuild.js && electron-builder --win"
-  },
-  "dependencies": {
-    "shaka-player": "^4.14.0"
-  },
-  "devDependencies": {
-    "electron": "^28.3.3"
+    "start": "npx serve renderer -p 8080"
   }
 }

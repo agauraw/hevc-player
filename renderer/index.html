@@ -5,11 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Content-Security-Policy"
     content="default-src 'self' blob: data:;
-             script-src 'self' 'unsafe-inline';
+             script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net;
              style-src 'self' 'unsafe-inline';
              media-src * blob: data:;
-             connect-src * blob: data: ws://localhost:* http://localhost:*" />
-  <title>AGPlayer</title>
+             connect-src * blob: data:" />
+  <title>Stream Analyser</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -19,7 +19,7 @@
   <div class="header-left">
     <span class="app-logo">▶</span>
     <div class="app-title-group">
-      <span class="app-title">AGPlayer</span>
+      <span class="app-title">Stream Analyser</span>
       <span class="app-subtitle">HEVC · CMAF · DRM</span>
     </div>
   </div>
@@ -27,11 +27,7 @@
     <span id="wv-badge"   class="badge badge--off" title="Widevine CDM status">WV –</span>
     <span id="hevc-badge" class="badge badge--off" title="HEVC decode capability">HEVC –</span>
     <button class="btn-header" id="analyzeBtn" title="Stream Analysis Tool">⊹ Analyze</button>
-    <button class="btn-about"  id="aboutBtn"   title="About AGPlayer">?</button>
-    <div class="wc-sep"></div>
-    <button class="wc-btn wc-min" id="wcMin"   title="Minimize">&#xE921;</button>
-    <button class="wc-btn wc-max" id="wcMax"   title="Maximize">&#xE922;</button>
-    <button class="wc-btn wc-close" id="wcClose" title="Close">&#xE8BB;</button>
+    <button class="btn-about"  id="aboutBtn"   title="About Stream Analyser">?</button>
   </div>
 </header>
 
@@ -152,28 +148,6 @@
 
     <section class="config-section">
       <h3 class="section-title">
-        Codec Preferences
-        <span class="toggle-arrow" id="codecToggle">▾</span>
-      </h3>
-      <div id="codecBody">
-        <label class="field-label">Video Codec Priority</label>
-        <div class="checkbox-group">
-          <label><input type="checkbox" id="prefHEVC" checked /> Prefer HEVC (hev1/hvc1)</label>
-          <label><input type="checkbox" id="prefAV1" /> Prefer AV1 (av01)</label>
-          <label><input type="checkbox" id="prefH264" checked /> Allow H.264 (avc1)</label>
-        </div>
-
-        <label class="field-label" style="margin-top:10px">ABR / Bandwidth</label>
-        <div class="field-row">
-          <label class="field-label" style="margin:0;font-size:11px">Start bitrate (kbps)</label>
-          <input id="startBandwidth" class="input input--sm" type="number"
-                 value="5000" min="100" max="100000" />
-        </div>
-      </div>
-    </section>
-
-    <section class="config-section">
-      <h3 class="section-title">
         Captions / Subtitles
         <span class="toggle-arrow" id="captionsToggle">▾</span>
       </h3>
@@ -204,7 +178,7 @@
 
       <div class="idle-overlay" id="idleOverlay">
         <div class="idle-logo">▶</div>
-        <div class="idle-brand">AGPlayer</div>
+        <div class="idle-brand">Stream Analyser</div>
         <p>Enter a stream URL and press <strong>Load &amp; Play</strong></p>
       </div>
 
@@ -216,6 +190,11 @@
         <div class="error-icon">⚠</div>
         <p id="errorMessage">An error occurred.</p>
         <button class="btn btn--small" id="errorDismiss">Dismiss</button>
+      </div>
+
+      <!-- Audio VU overlay – shown once audio context is active -->
+      <div class="player-vu" id="playerVu" style="display:none">
+        <canvas id="playerVuCanvas" class="player-vu-canvas"></canvas>
       </div>
 
       <div class="controls-bar" id="controlsBar">
@@ -264,6 +243,7 @@
           <button class="az-tab" data-tab="tracks">Tracks</button>
           <button class="az-tab" data-tab="network">Network</button>
           <button class="az-tab" data-tab="charts">Charts</button>
+          <button class="az-tab" data-tab="audio">Audio</button>
           <button class="az-tab" data-tab="captions">Captions</button>
         </div>
         <button class="az-close-btn" id="analyzerClose" title="Close">×</button>
@@ -464,13 +444,30 @@
           <button class="btn btn--small" id="azFetchChildren" style="display:none">⬇ All Children</button>
           <select id="azManifestSelector" class="input input--sm az-manifest-sel" style="display:none"></select>
           <span id="azChildStatus" class="az-child-status" style="display:none"></span>
+          <button class="btn btn--small" id="azViewAll" disabled title="Fetch children first">⊞ View All</button>
+          <button class="btn btn--small az-play-all-btn" id="azPlayAll" disabled title="Fetch children first">▶ Play All</button>
+          <button class="btn btn--small" id="azTagsBtn" disabled title="Fetch a manifest first">🏷 Tags</button>
+          <button class="btn btn--small az-mm-btn" id="azMismatchBtn" style="display:none" title="Child manifest mismatch report">⚡ Mismatches <span id="azMismatchBadge">0</span></button>
           <span class="az-hint">Fetches and parses the raw manifest from the stream URL</span>
         </div>
+
+        <!-- Mismatch report panel (shown after ⬇ All Children) -->
+        <div id="azMismatchPanel" class="az-mismatch-panel" style="display:none">
+          <div class="az-mm-hdr">
+            <span class="az-mm-title-lbl">⚡ Child Manifest Mismatches</span>
+            <span id="azMismatchCount" class="az-mm-count">—</span>
+            <button class="btn btn--small az-mm-dismiss" id="azMismatchDismiss">✕</button>
+          </div>
+          <div id="azMismatchBody"></div>
+        </div>
+
         <div class="az-manifest-body">
           <div class="az-manifest-tree" id="azManifestTree">
             <span class="az-hint" style="padding:12px">Click "Fetch / Refresh" to parse the manifest</span>
           </div>
           <pre class="az-manifest-raw" id="azManifestContent">— load a stream to fetch the manifest —</pre>
+          <div id="azManifestGrid" class="az-manifest-grid" style="display:none"></div>
+          <div id="azTagsView" class="az-tags-view-wrap" style="display:none"></div>
         </div>
       </div>
 
@@ -574,6 +571,28 @@
         </div>
       </div>
 
+      <!-- ── Audio dB Analyzer Tab ────────────────────────────────────────── -->
+      <div id="azAudio" class="az-view" style="display:none">
+        <div class="au-main">
+          <div class="au-meter-pane">
+            <canvas id="audioMeterCanvas" class="au-canvas"></canvas>
+          </div>
+          <div class="au-spec-pane">
+            <div class="au-spec-label">Waveform</div>
+            <canvas id="audioSpecCanvas" class="au-canvas"></canvas>
+          </div>
+        </div>
+        <div class="au-stats-bar">
+          <span class="au-stat-item"><span class="au-stat-lbl">L RMS</span><span class="au-stat-val" id="au-rms-l">—</span></span>
+          <span class="au-stat-item"><span class="au-stat-lbl">R RMS</span><span class="au-stat-val" id="au-rms-r">—</span></span>
+          <span class="au-stat-item"><span class="au-stat-lbl">L Peak</span><span class="au-stat-val au-peak" id="au-peak-l">—</span></span>
+          <span class="au-stat-item"><span class="au-stat-lbl">R Peak</span><span class="au-stat-val au-peak" id="au-peak-r">—</span></span>
+          <span id="au-clip-l" class="au-clip">L CLIP</span>
+          <span id="au-clip-r" class="au-clip">R CLIP</span>
+          <button class="btn btn--small au-reset-btn" id="auResetPeak">Reset Peak</button>
+        </div>
+      </div>
+
       <!-- ── Captions / VTT Tab ────────────────────────────────────────────── -->
       <div id="azCaptions" class="az-view" style="display:none">
 
@@ -655,7 +674,7 @@
     <div class="about-header">
       <div class="about-logo">▶</div>
       <div>
-        <div class="about-product">AGPlayer</div>
+        <div class="about-product">Stream Analyser</div>
         <div class="about-tagline">HEVC · CMAF · DRM</div>
       </div>
     </div>
@@ -675,7 +694,25 @@
   </div>
 </div>
 
-<script src="shaka-player.compiled.js"></script>
+<input type="file" id="filePicker"    accept=".m3u8,.mpd,.mp4,.m4s,.m4v,.m4a,.ts,.fmp4" style="display:none" />
+<input type="file" id="vttFilePicker" accept=".vtt"                                             style="display:none" />
+<script src="https://cdn.jsdelivr.net/npm/shaka-player@4/dist/shaka-player.compiled.js"></script>
+<!-- ══════════════════════════ MULTI-STREAM PLAYER OVERLAY ═══════════════════ -->
+<div id="azMultiplayOverlay" class="az-multiplay-overlay" style="display:none">
+  <div class="az-multiplay-header">
+    <span class="az-multiplay-title">▶ Multi-Stream Playback</span>
+    <div class="az-multiplay-controls">
+      <button class="btn btn--small" id="azMpPlay">▶ Play All</button>
+      <button class="btn btn--small" id="azMpPause">⏸ Pause All</button>
+      <button class="btn btn--small" id="azMpMute">🔊 Unmute All</button>
+      <button class="btn btn--small" id="azMpSync">⟳ Sync</button>
+      <span id="azMpStatus" class="az-child-status" style="margin-left:4px"></span>
+      <button class="btn btn--small btn--danger" id="azMpClose" style="margin-left:8px">✕ Close</button>
+    </div>
+  </div>
+  <div id="azMultiplayGrid" class="az-multiplay-grid"></div>
+</div>
+
 <script src="admarkers.js"></script>
 <script src="analyzer.js"></script>
 <script src="player.js"></script>
