@@ -745,6 +745,8 @@ video::-webkit-media-controls { display: none !important; }
   flex-shrink: 0;
 }
 .az-hint { font-size: 11px; color: var(--text-dim); }
+.az-child-status { font-size: 11px; color: #4ecca3; font-weight: 500; }
+.az-manifest-sel { max-width: 250px; font-size: 11px; padding: 2px 6px; height: 24px; }
 
 .az-manifest-body {
   display: flex;
@@ -1164,3 +1166,96 @@ video::-webkit-media-controls { display: none !important; }
   border-radius: 3px;
 }
 .az-chart-hint { font-size: 10px; color: var(--text-dim); margin-top: 4px; }
+
+/* ─── Captions / VTT config section ──────────────────────────────────────── */
+.vtt-status {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--accent2);
+  padding: 5px 9px;
+  background: rgba(78, 204, 163, 0.07);
+  border-radius: var(--radius);
+  border: 1px solid rgba(78, 204, 163, 0.2);
+  line-height: 1.5;
+}
+
+/* ─── Captions / VTT analyzer tab ────────────────────────────────────────── */
+.cc-live {
+  padding: 10px 14px;
+  background: var(--bg1);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-height: 58px;
+}
+.cc-live-label {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-dim);
+}
+.cc-cue-text {
+  font-size: 14px;
+  color: var(--text);
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+.cc-cue-text.cc-active { color: #fff; }
+.cc-cue-time {
+  font-size: 10px;
+  color: var(--text-dim);
+  font-family: 'Courier New', monospace;
+}
+.cc-split {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+.cc-cue-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-right: 1px solid var(--border);
+}
+.cc-raw-panel {
+  width: 260px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.cc-panel-hdr {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--text-dim);
+  padding: 5px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg1);
+  flex-shrink: 0;
+}
+.cc-cue-scroll {
+  flex: 1;
+  overflow-y: auto;
+}
+.cc-raw {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px 12px;
+  font-size: 10.5px;
+  font-family: 'Cascadia Code', 'Consolas', 'Courier New', monospace;
+  color: var(--text-dim);
+  white-space: pre;
+  background: var(--bg0);
+  margin: 0;
+  line-height: 1.6;
+}
+tr.cc-cue-active td {
+  background: rgba(108, 99, 255, 0.16) !important;
+  color: #d0cfff !important;
+}

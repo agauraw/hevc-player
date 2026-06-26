@@ -258,6 +258,17 @@ ipcMain.handle('show-open-dialog', async () => {
   return result.canceled ? null : result.filePaths[0];
 });
 
+ipcMain.handle('show-open-vtt-dialog', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: 'Open VTT Captions',
+    filters: [
+      { name: 'VTT Captions', extensions: ['vtt'] },
+    ],
+    properties: ['openFile'],
+  });
+  return result.canceled ? null : result.filePaths[0];
+});
+
 // ── App lifecycle ─────────────────────────────────────────────────────────────
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null);

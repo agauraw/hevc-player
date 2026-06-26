@@ -14,6 +14,12 @@ const presetEl       = document.getElementById('presetSelect');
 const loadBtn        = document.getElementById('loadBtn');
 const stopBtn        = document.getElementById('stopBtn');
 const browseBtn      = document.getElementById('browseBtn');
+const browseVttBtn   = document.getElementById('browseVttBtn');
+const loadVttBtn     = document.getElementById('loadVttBtn');
+const vttUrlEl       = document.getElementById('vttUrl');
+const vttTrackStatus = document.getElementById('vttTrackStatus');
+const captionsToggle = document.getElementById('captionsToggle');
+const captionsBody   = document.getElementById('captionsBody');
 const addHeaderBtn   = document.getElementById('addHeaderBtn');
 const headersListEl  = document.getElementById('headersList');
 const playPauseBtn   = document.getElementById('playPauseBtn');
@@ -113,6 +119,75 @@ function formatShakaError(e) {
   }
 
   return parts.join('\n');
+}
+
+// ── VTT parsing ───────────────────────────────────────────────────────────────
+function parseVttTime(str) {
+  const parts = str.trim().split(':').map(parseFloat);
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  return parts[0] || 0;
+}
+
+function parseVtt(text) {
+  const cues = [];
+  const blocks = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split(/\n\n+/);
+  for (const block of blocks) {
+    const lines = block.trim().split('\n');
+    if (!lines.length) continue;
+    if (lines[0].startsWith('WEBVTT') || lines[0].startsWith('NOTE')) continue;
+    const timingIdx = lines.findIndex(l => l.includes('-->'));
+    if (timingIdx < 0) continue;
+    const timingLine = lines[timingIdx];
+    const arrowIdx   = timingLine.indexOf('-->');
+    const startStr   = timingLine.slice(0, arrowIdx).trim();
+    // End time ends before any position settings (first space after timestamp)
+    const afterArrow = timingLine.slice(arrowIdx + 3).trim();
+    const endStr     = afterArrow.split(/\s+/)[0];
+    const bodyLines  = lines.slice(timingIdx + 1);
+    // Strip VTT cue payload tags like <b>, <i>, <c.color>, timestamps
+    const rawText = bodyLines.join('\n').trim();
+    const text    = rawText.replace(/<[^>]+>/g, '').trim();
+    if (!text) continue;
+    const id = lines.slice(0, timingIdx).join(' ').trim() || String(cues.length + 1);
+    cues.push({ id, startTime: parseVttTime(startStr), endTime: parseVttTime(endStr), startStr, endStr, text, rawText });
+  }
+  return cues;
+}
+
+async function loadAndParseVtt(uri, label) {
+  try {
+    const res  = await fetch(uri);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const raw  = await res.text();
+    const cues = parseVtt(raw);
+    analyzer.addVttTrack(raw, cues, label || uri.split('/').pop().split('?')[0]);
+    vttTrackStatus.style.display = 'block';
+    vttTrackStatus.style.color   = '';
+    vttTrackStatus.textContent   = `✓ ${label || uri.split('/').pop().split('?')[0]}  ·  ${cues.length} cue${cues.length !== 1 ? 's' : ''}`;
+    setStatus(`Caption track loaded: ${cues.length} cues`);
+    // Wire cue-change events for active cue tracking
+    _hookTextTracks();
+  } catch (err) {
+    vttTrackStatus.style.display = 'block';
+    vttTrackStatus.textContent   = `⚠ Failed to load: ${err.message}`;
+    vttTrackStatus.style.color   = 'var(--red)';
+  }
+}
+
+let _vttTimeupdateHooked = false;
+function _hookTextTracks() {
+  const tl = video.textTracks;
+  for (let i = 0; i < tl.length; i++) {
+    const track = tl[i];
+    if (track._vttHooked) continue;
+    track._vttHooked = true;
+    track.addEventListener('cuechange', () => analyzer.updateActiveCue(video.currentTime));
+  }
+  if (!_vttTimeupdateHooked) {
+    _vttTimeupdateHooked = true;
+    video.addEventListener('timeupdate', () => analyzer.updateActiveCue(video.currentTime), { passive: true });
+  }
 }
 
 function showError(msg) {
@@ -288,6 +363,10 @@ function initShaka() {
 
   player.addEventListener('loaded', () => {
     analyzer.logEvent('player', 'loaded', `Live: ${player.isLive()}`);
+  });
+  player.addEventListener('texttrackadded', () => {
+    analyzer.logEvent('player', 'texttrackadded');
+    _hookTextTracks();
   });
 
   player.addEventListener('loading', () => analyzer.logEvent('player', 'loading'));
@@ -515,6 +594,8 @@ async function stopPlayback() {
   clearTrackSelectors();
   setLoadingState(false);
   analyzer.reset();
+  analyzer.resetCaptions();
+  vttTrackStatus.style.display = 'none';
   document.getElementById('containerStrip').style.display = 'none';
   setStatus('Stopped');
 }
@@ -669,6 +750,27 @@ browseBtn.addEventListener('click', async () => {
   if (fp) streamUrlEl.value = `file:///${fp.replace(/\\/g, '/')}`;
 });
 
+browseVttBtn.addEventListener('click', async () => {
+  const fp = await window.electronAPI.showOpenVttDialog();
+  if (!fp) return;
+  const uri   = `file:///${fp.replace(/\\/g, '/')}`;
+  const label = fp.split(/[\\/]/).pop();
+  vttUrlEl.value = uri;
+  if (player) {
+    try { await player.addTextTrackAsync(uri, 'en', 'subtitles', 'text/vtt'); } catch {}
+  }
+  await loadAndParseVtt(uri, label);
+});
+
+loadVttBtn.addEventListener('click', async () => {
+  const uri = vttUrlEl.value.trim();
+  if (!uri) { showError('Enter a VTT URL or browse for a local file.'); return; }
+  if (player) {
+    try { await player.addTextTrackAsync(uri, 'en', 'subtitles', 'text/vtt'); } catch {}
+  }
+  await loadAndParseVtt(uri);
+});
+
 addHeaderBtn.addEventListener('click', () => addHeaderRow());
 
 function addHeaderRow(key = '', val = '') {
@@ -818,6 +920,7 @@ function setupCollapsible(toggle, body) {
 }
 setupCollapsible(drmToggle, drmBody);
 setupCollapsible(codecToggle, codecBody);
+setupCollapsible(captionsToggle, captionsBody);
 
 // ── Custom window controls ────────────────────────────────────────────────────
 const wcMin   = document.getElementById('wcMin');

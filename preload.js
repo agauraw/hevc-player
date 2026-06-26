@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getPlatform:       ()           => ipcRenderer.invoke('get-platform'),
   openUrl:           (url)        => ipcRenderer.invoke('open-url', url),
   showOpenDialog:    ()           => ipcRenderer.invoke('show-open-dialog'),
+  showOpenVttDialog: ()           => ipcRenderer.invoke('show-open-vtt-dialog'),
   updateDrmConfig:   (cfg)        => ipcRenderer.invoke('update-drm-config', cfg),
   testLicenseServer: (url, hdrs)  => ipcRenderer.invoke('test-license-server', { url, headers: hdrs }),
   // Custom window controls

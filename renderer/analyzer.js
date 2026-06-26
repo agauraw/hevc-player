@@ -50,10 +50,18 @@ class StreamAnalyzer {
     this._adBreakTimer   = null;
     // Buffer timeline
     this._bufTimerFrame = null;
+    // Captions / VTT state
+    this._vttTracks    = [];   // { id, label, language, kind, cues[] }
+    this._activeVttIdx = 0;
+    this._activeCueRow = null;
     // State
     this._visible   = false;
     this._activeTab = 'overview';
     this._statsTimer = null;
+    // Child manifest state
+    this._masterManifest      = null; // { url, text, isHLS }
+    this._childManifests      = [];   // [{ url, label, type, text, error, codecs }]
+    this._selectedManifestIdx = -1;   // -1 = master
 
     this._bindUI();
   }
@@ -73,6 +81,7 @@ class StreamAnalyzer {
       events:   document.getElementById('azEvents'),
       markers:  document.getElementById('azMarkers'),
       charts:   document.getElementById('azCharts'),
+      captions: document.getElementById('azCaptions'),
     };
     this._charts = {
       bitrate: document.getElementById('chartBitrate'),
@@ -89,9 +98,17 @@ class StreamAnalyzer {
     document.getElementById('azClearLog').addEventListener('click', () => { this._netLog=[]; this._renderNetworkLog(); });
     document.getElementById('azNetFilter').addEventListener('change', () => this._renderNetworkLog());
     document.getElementById('azFetchManifest').addEventListener('click', () => this._fetchManifest());
+    document.getElementById('azFetchChildren')?.addEventListener('click', () => this._fetchAllChildren());
+    document.getElementById('azManifestSelector')?.addEventListener('change', e => {
+      this._showSelectedManifest(parseInt(e.target.value, 10));
+    });
     document.getElementById('azClearEvents').addEventListener('click', () => { this._eventLog=[]; this._renderEventLog(); });
     document.getElementById('azEvtFilter').addEventListener('change', () => this._renderEventLog());
     document.getElementById('azMarkerFilter').addEventListener('change', () => this._renderMarkers());
+    document.getElementById('ccTrackSelect').addEventListener('change', e => {
+      this._activeVttIdx = parseInt(e.target.value, 10) || 0;
+      this._renderCaptionsTab();
+    });
 
     // Click-to-seek on buffer timeline
     this._bufCanvas?.addEventListener('click', e => this._seekFromTimeline(e));
@@ -245,6 +262,13 @@ class StreamAnalyzer {
     this._stopAdBreakTimer();
     this._brHist.fill(null); this._bufHist.fill(null); this._drHist.fill(0); this._latHist.fill(null);
     this._tick=0; this._prevDrop=0; this._seqId=0; this._reqMap.clear();
+    this._masterManifest=null; this._childManifests=[]; this._selectedManifestIdx=-1;
+    const _cb=document.getElementById('azFetchChildren');
+    const _cs=document.getElementById('azManifestSelector');
+    const _ct=document.getElementById('azChildStatus');
+    if(_cb){_cb.style.display='none';_cb.disabled=false;_cb.textContent='⬇ All Children';}
+    if(_cs) _cs.style.display='none';
+    if(_ct) _ct.style.display='none';
     this._renderNetworkLog(); this._renderEventLog(); this._clearOverview();
     document.getElementById('azManifestContent').textContent='— load a stream to fetch the manifest —';
     document.getElementById('azManifestTree').innerHTML='';
@@ -258,6 +282,7 @@ class StreamAnalyzer {
   // ── Event logging (called from player.js) ────────────────────────────────
   logEvent(category, name, detail='') {
     const ts=Date.now();
+    if (name === 'texttrackadded') this._renderTracks(); // Refresh tracks view // This was already present
     const d=new Date(ts);
     const stamp=`${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}.${String(d.getMilliseconds()).padStart(3,'0')}`;
     this._eventLog.unshift({ ts, stamp, category, name, detail:String(detail||'').substring(0,300) });
@@ -355,6 +380,7 @@ class StreamAnalyzer {
     if(tab==='markers')  { this._renderAdMonitor(); this._renderMarkers(); }
     if(tab==='charts')   requestAnimationFrame(()=>this._drawCharts());
     if(tab==='buffer')   this._startBufAnimation();
+    if(tab==='captions') this._renderCaptionsTab();
   }
 
   // ── Overview ──────────────────────────────────────────────────────────────
@@ -493,6 +519,15 @@ class StreamAnalyzer {
     const tree=document.getElementById('azManifestTree');
     if(!url){ raw.textContent='Enter a stream URL in the Source panel first.'; tree.innerHTML=''; return; }
     raw.textContent='Fetching manifest…'; tree.innerHTML='';
+    // Reset child state on every fresh master fetch
+    this._masterManifest=null; this._childManifests=[]; this._selectedManifestIdx=-1;
+    const childBtn=document.getElementById('azFetchChildren');
+    const childSel=document.getElementById('azManifestSelector');
+    const childStat=document.getElementById('azChildStatus');
+    if(childBtn){childBtn.style.display='none';childBtn.disabled=false;childBtn.textContent='⬇ All Children';}
+    if(childSel) childSel.style.display='none';
+    if(childStat) childStat.style.display='none';
+
     try{
       const res=await fetch(url,{cache:'no-store'});
       if(!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
@@ -512,6 +547,12 @@ class StreamAnalyzer {
           this._renderMarkers();
           this._updateMarkerSummary();
         }
+        // Store master + show children button if this is a master playlist
+        this._masterManifest={url,text,isHLS:true};
+        const isMaster=text.includes('#EXT-X-STREAM-INF');
+        if(childBtn && isMaster){
+          childBtn.style.display='';
+        }
       } else if(isDASH){
         raw.innerHTML=this._highlightMPD(text);
         tree.innerHTML=this._parseMPDTree(text);
@@ -524,8 +565,176 @@ class StreamAnalyzer {
           this._renderMarkers();
           this._updateMarkerSummary();
         }
+        this._masterManifest={url,text,isHLS:false};
       } else raw.textContent=text;
     }catch(err){ raw.textContent=`Error:\n${err.message}`; tree.innerHTML=''; }
+  }
+
+  // ── Child manifest helpers ────────────────────────────────────────────────
+  _parseHLSChildUrls(text, masterUrl) {
+    const baseUrl = masterUrl.includes('?')
+      ? masterUrl.substring(0, masterUrl.lastIndexOf('/') + 1)
+      : masterUrl.substring(0, masterUrl.lastIndexOf('/') + 1);
+
+    const resolve = u => {
+      if (!u) return null;
+      if (/^https?:\/\//i.test(u)) return u;
+      try {
+        const origin = new URL(masterUrl).origin;
+        return u.startsWith('/') ? origin + u : baseUrl + u;
+      } catch { return baseUrl + u; }
+    };
+
+    const lines   = text.split('\n');
+    const children = [];
+    const seen    = new Set();
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+
+      if (line.startsWith('#EXT-X-STREAM-INF')) {
+        const bw     = line.match(/BANDWIDTH=(\d+)/)?.[1];
+        const res    = line.match(/RESOLUTION=([\dx]+)/)?.[1];
+        const codecs = line.match(/CODECS="([^"]+)"/)?.[1];
+        const fr     = line.match(/FRAME-RATE=([\d.]+)/)?.[1];
+        // skip any comment/tag lines to find the URI
+        let j = i + 1;
+        while (j < lines.length && (lines[j].trim() === '' || lines[j].trim().startsWith('#'))) j++;
+        const next = lines[j]?.trim();
+        if (next && !next.startsWith('#')) {
+          const url = resolve(next);
+          if (url && !seen.has(url)) {
+            seen.add(url);
+            const label = res
+              ? `📺 ${res}${fr ? ` ${parseFloat(fr).toFixed(0)}fps` : ''} ${bw ? `(${Math.round(+bw/1000)} kbps)` : ''}`
+              : `📺 Variant ${bw ? Math.round(+bw/1000)+' kbps' : children.length + 1}`;
+            children.push({ url, label, type: 'variant', codecs: codecs || null });
+          }
+          i = j;
+        }
+      }
+
+      if (line.startsWith('#EXT-X-MEDIA')) {
+        const uriM = line.match(/URI="([^"]+)"/);
+        if (uriM) {
+          const type = line.match(/TYPE=([A-Z-]+)/)?.[1] || 'MEDIA';
+          const lang = line.match(/LANGUAGE="([^"]+)"/)?.[1];
+          const name = line.match(/NAME="([^"]+)"/)?.[1];
+          const url  = resolve(uriM[1]);
+          if (url && !seen.has(url)) {
+            seen.add(url);
+            const icon  = type === 'AUDIO' ? '🔊' : type === 'SUBTITLES' ? '📝' : type === 'CLOSED-CAPTIONS' ? '💬' : '📋';
+            const label = `${icon} ${type}${lang ? ` [${lang}]` : ''}${name ? `: ${name}` : ''}`;
+            children.push({ url, label, type: type.toLowerCase(), codecs: null });
+          }
+        }
+      }
+    }
+    return children;
+  }
+
+  async _fetchAllChildren() {
+    const btn    = document.getElementById('azFetchChildren');
+    const statEl = document.getElementById('azChildStatus');
+    if (!this._masterManifest?.isHLS) return;
+
+    btn.disabled = true;
+    btn.textContent = '⏳ Fetching…';
+    if (statEl) { statEl.textContent = 'Fetching child manifests…'; statEl.style.display = ''; }
+
+    const defs = this._parseHLSChildUrls(this._masterManifest.text, this._masterManifest.url);
+    if (!defs.length) {
+      if (statEl) statEl.textContent = 'No child manifest URLs found';
+      btn.disabled = false;
+      btn.textContent = '⬇ All Children';
+      return;
+    }
+
+    const results = await Promise.all(defs.map(async def => {
+      try {
+        const res = await fetch(def.url, { cache: 'no-store' });
+        if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+        const text = await res.text();
+        return { ...def, text, error: null };
+      } catch (err) {
+        return { ...def, text: null, error: err.message };
+      }
+    }));
+
+    this._childManifests = results;
+    this._selectedManifestIdx = -1;
+    this._updateManifestSelector();
+
+    const ok = results.filter(r => !r.error).length;
+    if (statEl) { statEl.textContent = `${ok}/${results.length} children loaded`; statEl.style.display = ''; }
+    btn.disabled = false;
+    btn.textContent = '⬇ All Children';
+  }
+
+  _updateManifestSelector() {
+    const sel = document.getElementById('azManifestSelector');
+    if (!sel) return;
+    const opts = ['<option value="-1">🗂 Master Manifest</option>'];
+    this._childManifests.forEach((c, i) => {
+      opts.push(`<option value="${i}">${esc(c.label)}${c.error ? ' ⚠' : ''}</option>`);
+    });
+    sel.innerHTML  = opts.join('');
+    sel.value      = String(this._selectedManifestIdx);
+    sel.style.display = '';
+  }
+
+  _showSelectedManifest(idx) {
+    this._selectedManifestIdx = idx;
+    const raw  = document.getElementById('azManifestContent');
+    const tree = document.getElementById('azManifestTree');
+
+    if (idx < 0 || !this._childManifests[idx]) {
+      if (this._masterManifest) {
+        raw.innerHTML  = this._masterManifest.isHLS
+          ? this._highlightHLS(this._masterManifest.text)
+          : this._highlightMPD(this._masterManifest.text);
+        tree.innerHTML = this._masterManifest.isHLS
+          ? this._parseHLSTree(this._masterManifest.text)
+          : this._parseMPDTree(this._masterManifest.text);
+      }
+      return;
+    }
+
+    const child = this._childManifests[idx];
+    if (child.error) {
+      raw.textContent = `Failed to fetch:\n${child.url}\n\n${child.error}`;
+      tree.innerHTML  = `<div class="az-tree">${this._treeRoot(child.label)}<div class="az-tree-item az-tree-child"><span class="az-tree-icon">⚠</span><span>${esc(child.error)}</span></div></div>`;
+      return;
+    }
+    raw.innerHTML  = this._highlightHLS(child.text);
+    tree.innerHTML = this._parseChildTree(child);
+  }
+
+  _parseChildTree(child) {
+    const lines     = child.text.split('\n');
+    const segments  = lines.filter(l => l.trim() && !l.startsWith('#'));
+    const keys      = lines.filter(l => l.startsWith('#EXT-X-KEY'));
+    const maps      = lines.filter(l => l.startsWith('#EXT-X-MAP'));
+    const isLive    = !lines.some(l => l.startsWith('#EXT-X-ENDLIST'));
+    const targetDur = lines.find(l => l.startsWith('#EXT-X-TARGETDURATION'))?.match(/#EXT-X-TARGETDURATION:(\d+)/)?.[1];
+    const seqNum    = lines.find(l => l.startsWith('#EXT-X-MEDIA-SEQUENCE'))?.match(/#EXT-X-MEDIA-SEQUENCE:(\d+)/)?.[1];
+    const totalSec  = lines.filter(l => l.startsWith('#EXTINF'))
+      .reduce((s, l) => { const m = l.match(/#EXTINF:([\d.]+)/); return s + (m ? parseFloat(m[1]) : 0); }, 0);
+
+    let html = `<div class="az-tree">${this._treeRoot(`${child.label} (${isLive ? 'Live' : 'VOD'})`)}`;
+    html += this._treeChild('🎞', `${segments.length} segment${segments.length !== 1 ? 's' : ''}${totalSec > 0 ? ` (~${totalSec.toFixed(1)}s)` : ''}`);
+    if (targetDur) html += this._treeChild('⏱', `Target duration: ${targetDur}s`);
+    if (seqNum)    html += this._treeChild('#', `Sequence start: ${seqNum}`);
+    if (maps.length)  html += this._treeChild('📦', 'Init segment (EXT-X-MAP)');
+    if (keys.length) {
+      html += this._treeChild('🔑', `DRM — ${keys.length} key block${keys.length > 1 ? 's' : ''}`);
+      keys.forEach(k => {
+        const method = k.match(/METHOD=([A-Z0-9-]+)/)?.[1] || '?';
+        html += `<div class="az-tree-item az-tree-gc"><span class="az-pill az-pill--red">${method}</span></div>`;
+      });
+    }
+    if (child.codecs) html += this._treeChild('🎬', `Codecs: ${child.codecs}`);
+    return html + '</div>';
   }
 
   // ── Ad Break Monitor ──────────────────────────────────────────────────────
@@ -1092,6 +1301,120 @@ class StreamAnalyzer {
     ctx.font=`9px 'Courier New'`; ctx.fillStyle='rgba(255,255,255,0.25)';
     ctx.textAlign='right'; ctx.fillText(Math.round(maxV),W-2,11);
     ctx.textAlign='left';  ctx.fillText('0',2,H-2);
+  }
+
+  // ── Captions / VTT ────────────────────────────────────────────────────────
+
+  // Called by player.js after fetching and parsing a VTT file.
+  // raw  = raw VTT text string
+  // cues = [{id, startTime, endTime, startStr, endStr, text}]
+  // label = human-readable track name
+  addVttTrack(raw, cues, label) {
+    const idx = this._vttTracks.length;
+    this._vttTracks.push({ label: label || `Track ${idx + 1}`, raw, cues });
+    this._activeVttIdx = idx;
+    this._updateTrackSelector();
+    if (this._visible && this._activeTab === 'captions') this._renderCaptionsTab();
+  }
+
+  // Called on reset / stop to clear caption state.
+  resetCaptions() {
+    this._vttTracks = [];
+    this._activeVttIdx = 0;
+    this._activeCueRow = null;
+    this._updateTrackSelector();
+    this._renderCaptionsTab();
+  }
+
+  // Called on video timeupdate to highlight the active cue.
+  updateActiveCue(currentTime) {
+    if (!this._vttTracks.length) return;
+    const track = this._vttTracks[this._activeVttIdx];
+    if (!track) return;
+
+    const cue = track.cues.find(c => currentTime >= c.startTime && currentTime < c.endTime) || null;
+
+    const textEl = document.getElementById('ccCueText');
+    const timeEl = document.getElementById('ccCueTime');
+    if (!textEl) return;
+
+    if (cue) {
+      textEl.textContent = cue.text;
+      textEl.classList.add('cc-active');
+      timeEl.textContent = `${cue.startStr} → ${cue.endStr}`;
+    } else {
+      textEl.textContent = '—';
+      textEl.classList.remove('cc-active');
+      timeEl.textContent = '';
+    }
+
+    // Highlight the matching row in the cue table
+    if (this._visible && this._activeTab === 'captions') {
+      const tbody = document.getElementById('az-cclog');
+      if (!tbody) return;
+      tbody.querySelectorAll('tr').forEach(r => r.classList.remove('cc-cue-active'));
+      if (cue) {
+        const row = tbody.querySelector(`tr[data-cue-id="${CSS.escape(cue.id)}"]`);
+        if (row) {
+          row.classList.add('cc-cue-active');
+          if (row !== this._activeCueRow) {
+            row.scrollIntoView({ block: 'nearest' });
+            this._activeCueRow = row;
+          }
+        }
+      }
+    }
+  }
+
+  _updateTrackSelector() {
+    const sel = document.getElementById('ccTrackSelect');
+    if (!sel) return;
+    if (!this._vttTracks.length) {
+      sel.innerHTML = '<option value="">— no tracks loaded —</option>';
+      return;
+    }
+    sel.innerHTML = this._vttTracks.map((t, i) =>
+      `<option value="${i}"${i === this._activeVttIdx ? ' selected' : ''}>${esc(t.label)}</option>`
+    ).join('');
+  }
+
+  _renderCaptionsTab() {
+    const tbody   = document.getElementById('az-cclog');
+    const rawEl   = document.getElementById('ccRawVtt');
+    const countEl = document.getElementById('ccCueCount');
+    if (!tbody) return;
+
+    const track = this._vttTracks[this._activeVttIdx];
+    if (!track || !track.cues.length) {
+      tbody.innerHTML = '<tr><td colspan="3" class="az-empty">No cues loaded — use the Captions section in the left panel</td></tr>';
+      if (rawEl) rawEl.textContent = track?.raw || '— no VTT loaded —';
+      if (countEl) countEl.textContent = 'Load a VTT file or stream with embedded subtitles';
+      return;
+    }
+
+    if (countEl) countEl.textContent = `${track.cues.length} cue${track.cues.length !== 1 ? 's' : ''} · ${esc(track.label)}`;
+    if (rawEl) rawEl.textContent = track.raw;
+
+    tbody.innerHTML = track.cues.map(c =>
+      `<tr class="mk-row" data-cue-id="${esc(c.id)}">
+        <td class="mk-time">${esc(c.startStr)}</td>
+        <td class="mk-time">${esc(c.endStr)}</td>
+        <td>${esc(c.text)}</td>
+      </tr>`
+    ).join('');
+
+    // Re-attach click-to-seek on each row
+    tbody.querySelectorAll('.mk-row').forEach(row => {
+      row.style.cursor = 'pointer';
+      row.addEventListener('click', () => {
+        if (this._video) this._video.currentTime = parseFloat(row.dataset.start) || 0;
+      });
+    });
+    // Re-set data-start attributes
+    track.cues.forEach((c, i) => {
+      const row = tbody.querySelectorAll('tr')[i];
+      if (row) row.dataset.start = String(c.startTime);
+    });
   }
 }
 

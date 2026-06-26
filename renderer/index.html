@@ -172,6 +172,23 @@
       </div>
     </section>
 
+    <section class="config-section">
+      <h3 class="section-title">
+        Captions / Subtitles
+        <span class="toggle-arrow" id="captionsToggle">▾</span>
+      </h3>
+      <div id="captionsBody">
+        <label class="field-label">VTT Caption Track</label>
+        <div class="url-row">
+          <input id="vttUrl" class="input" type="url"
+                 placeholder="https://…/captions.vtt" spellcheck="false" />
+          <button class="btn btn--icon" id="browseVttBtn" title="Open local .vtt file">CC</button>
+        </div>
+        <button class="btn btn--small" id="loadVttBtn">↳ Load Caption Track</button>
+        <div id="vttTrackStatus" class="vtt-status" style="display:none"></div>
+      </div>
+    </section>
+
     <div class="load-row">
       <button class="btn btn--primary" id="loadBtn">▶ Load &amp; Play</button>
       <button class="btn btn--danger"  id="stopBtn" disabled>■ Stop</button>
@@ -247,6 +264,7 @@
           <button class="az-tab" data-tab="tracks">Tracks</button>
           <button class="az-tab" data-tab="network">Network</button>
           <button class="az-tab" data-tab="charts">Charts</button>
+          <button class="az-tab" data-tab="captions">Captions</button>
         </div>
         <button class="az-close-btn" id="analyzerClose" title="Close">×</button>
       </div>
@@ -443,6 +461,9 @@
       <div id="azManifest" class="az-view" style="display:none">
         <div class="az-manifest-toolbar">
           <button class="btn btn--small" id="azFetchManifest">⟳ Fetch / Refresh</button>
+          <button class="btn btn--small" id="azFetchChildren" style="display:none">⬇ All Children</button>
+          <select id="azManifestSelector" class="input input--sm az-manifest-sel" style="display:none"></select>
+          <span id="azChildStatus" class="az-child-status" style="display:none"></span>
           <span class="az-hint">Fetches and parses the raw manifest from the stream URL</span>
         </div>
         <div class="az-manifest-body">
@@ -553,6 +574,51 @@
         </div>
       </div>
 
+      <!-- ── Captions / VTT Tab ────────────────────────────────────────────── -->
+      <div id="azCaptions" class="az-view" style="display:none">
+
+        <!-- Live cue display -->
+        <div class="cc-live">
+          <div class="cc-live-label">Active Cue</div>
+          <div class="cc-cue-text" id="ccCueText">—</div>
+          <div class="cc-cue-time" id="ccCueTime"></div>
+        </div>
+
+        <!-- Track selector toolbar -->
+        <div class="az-net-toolbar">
+          <select class="input input--sm" id="ccTrackSelect">
+            <option value="">— no tracks loaded —</option>
+          </select>
+          <span class="az-hint" id="ccCueCount">Load a VTT file or stream with embedded subtitles</span>
+        </div>
+
+        <!-- Split: cue list + raw VTT -->
+        <div class="cc-split">
+          <div class="cc-cue-panel">
+            <div class="cc-panel-hdr">Cue Timeline</div>
+            <div class="az-net-scroll cc-cue-scroll">
+              <table class="az-table az-net-table">
+                <thead>
+                  <tr>
+                    <th style="width:82px">Start</th>
+                    <th style="width:82px">End</th>
+                    <th>Text</th>
+                  </tr>
+                </thead>
+                <tbody id="az-cclog">
+                  <tr><td colspan="3" class="az-empty">No cues loaded — use the Captions section in the left panel</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div class="cc-raw-panel">
+            <div class="cc-panel-hdr">Raw VTT</div>
+            <pre class="cc-raw" id="ccRawVtt">— no VTT loaded —</pre>
+          </div>
+        </div>
+
+      </div><!-- end azCaptions -->
+
     </div>
     <!-- end analyzer panel -->
 
@@ -609,8 +675,6 @@
   </div>
 </div>
 
-<script src="/__neutralino_globals.js"></script>
-<script src="bridge.js"></script>
 <script src="shaka-player.compiled.js"></script>
 <script src="admarkers.js"></script>
 <script src="analyzer.js"></script>
