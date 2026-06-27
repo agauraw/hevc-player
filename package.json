@@ -1,12 +1,19 @@
 {
-  "name": "gauraw-player",
+  "name": "stream-analyser",
   "version": "1.0.0",
-  "description": "Gauraw — HEVC/CMAF web player with Widevine DRM",
+  "description": "Stream Analyser — HEVC/CMAF web player with Widevine DRM and stream analysis",
   "author": {
     "name": "Gauraw",
     "email": "gauraw2004amit@gmail.com"
   },
+  "license": "UNLICENSED",
+  "main": "server.js",
   "scripts": {
-    "start": "npx serve renderer -p 8080"
+    "build": "node build.js",
+    "start": "node server.js",
+    "dev":   "npx serve renderer -p 8080"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }

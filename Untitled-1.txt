@@ -1,0 +1,290 @@
+Build "AGPlayer" — an Electron desktop media player for HEVC/CMAF/DRM streams.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TECH STACK
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- Electron 28+ (main + renderer, contextIsolation: true, nodeIntegration: false, preload bridge)
+- Shaka Player 4.x (adaptive streaming engine, loaded as compiled JS in renderer)
+- Vanilla JS + CSS (no frameworks)
+- electron-builder for Windows/macOS/Linux packaging
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MAIN PROCESS (main.js)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Chromium flags (before app ready):
+  --enable-features=PlatformHEVCDecoderSupport,PlatformHEVCEncoderSupport,UseHardwareDecoding
+  --enable-gpu-rasterization --enable-zero-copy --ignore-gpu-blocklist
+
+Widevine CDM auto-detection:
+  Search Chrome, Chrome Beta, Chrome Dev, Brave, Edge install dirs
+  on Windows (PROGRAMFILES, PROGRAMFILES(X86), LOCALAPPDATA), macOS, Linux
+  Find highest version WidevineCdm/manifest.json → widevinecdm.dll/.dylib/.so
+  Apply: --widevine-cdm-path, --widevine-cdm-version
+
+BrowserWindow:
+  1400×860 (min 900×600), frame: false (custom title bar), backgroundColor #0d0d0f
+  webSecurity: false, preload bridge
+
+Session hooks:
+  onBeforeSendHeaders — inject DRM auth headers on license server hostname matches
+  onHeadersReceived   — inject CORS response headers (access-control-allow-origin: *)
+
+IPC handlers (ipcMain.handle / ipcMain.on):
+  update-drm-config      — receive {licenseUrl, headers}, re-apply session hook
+  test-license-server    — raw Node.js HTTP POST to license URL, return {ok, status, headers, body}
+  window-minimize/maximize/close/is-maximized — custom title bar controls
+  get-widevine-info      — return {available, version, path}
+  get-platform           — return process.platform
+  open-url               — shell.openExternal
+  show-open-dialog       — file picker for HLS/DASH/MP4 files
+  show-open-vtt-dialog   — file picker for .vtt caption files
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PRELOAD (preload.js)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Expose all IPC calls via contextBridge as window.electronAPI
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+UI LAYOUT (renderer/index.html + styles.css)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Dark theme: background #0d0d0f, accent purple #6c63ff, teal #4ecca3
+Font: system-ui. No external fonts or icon libraries.
+
+HEADER BAR (custom frameless title bar, draggable):
+  Left: ▶ logo + "AGPlayer" title + "HEVC · CMAF · DRM" subtitle
+  Right: WV badge (Widevine status), HEVC badge, ⊹ Analyze button,
+         ? About button, separator, [─] [□] [✕] window controls (Segoe MDL2 icons)
+
+APP BODY (horizontal split, flex):
+
+  LEFT CONFIG PANEL (collapsible sections):
+    1. Source section:
+       - Stream URL text input (type=url)
+       - 📂 Browse button (open file dialog)
+       - Test Streams preset <select> with optgroups:
+           HLS — Clear: Mux BigBuckBunny, Shaka AngelOne, Bitmovin ArtOfMotion,
+                        JWPlayer BipBop, Longtail ID3, Unified TearsOfSteel
+           HLS — Live:  Akamai Live Test Feed, Akamai Channel 8 Live
+           MPEG-DASH — Clear: Akamai BBB 30fps, Shaka AngelOne, Bitmovin ArtOfMotion,
+                              Axinom 1080p ClearKey, Unified TearsOfSteel, Akamai MultiRes
+           DASH — Live: DASHIF Live Sim 2s, DASHIF Live Sim CMAF chunks
+           Widevine DRM: Shaka Widevine demo (sentinel value)
+           HEVC / H.265: Bitmovin HEVC fMP4, Shaka AngelOne
+           SCTE-35 / Ad Markers: DASHIF Live SCTE-35, DASHIF SCTE-35 v3+Periods,
+                                  DASHIF Multi-Period 60s pods, Longtail HLS ID3,
+                                  Akamai SSAI HLS, Apple HLS DATERANGE
+           Discontinuity: Apple BipBop TS, Apple BipBop HEVC/CMAF,
+                          Akamai Ad-Stitched VOD, Longtail Oceans AES
+
+    2. DRM / Widevine section (collapsible, ▾ toggle):
+       - License Server URL input
+       - Custom Request Headers: dynamic add/remove key-value rows, + Add Header button
+       - License Request Body (base64, optional)
+       - Widevine Robustness dropdown: SW_SECURE_CRYPTO / SW_SECURE_DECODE /
+                                       HW_SECURE_CRYPTO / HW_SECURE_DECODE / HW_SECURE_ALL
+       - ⚡ Test License Server button + inline result badge + detail expand
+
+    3. Codec Preferences section (collapsible):
+       - Checkboxes: Prefer HEVC (hev1/hvc1), Prefer AV1 (av01), Allow H.264 (avc1)
+       - Start bitrate input (kbps, default 5000)
+
+    4. Captions / Subtitles section (collapsible):
+       - VTT URL input + CC Browse button (local .vtt picker)
+       - ↳ Load Caption Track button
+       - Status indicator for loaded track
+
+    Action row: ▶ Load & Play (primary), ■ Stop (danger, disabled until loaded)
+
+  RIGHT PLAYER AREA:
+    Video wrapper (fills remaining space):
+      <video> element with playsinline
+      Overlays (positioned absolute, z-layered):
+        Idle: ▶ logo, "AGPlayer" brand, instruction text
+        Spinner: CSS animated ring (loading state)
+        Error: ⚠ icon, message text, Dismiss button
+
+      Controls bar (slides in from bottom, auto-hide after 2.5s on mouse-idle):
+        Top row: seek bar (range input, styled), current time / duration display
+        Bottom row left: ▶/⏸ play-pause, 🔊/🔇 mute, volume range, ● LIVE badge (live only)
+        Bottom row right: Quality select, Audio Track select, Subtitles select, ⛶ Fullscreen
+
+    Stream Analyzer panel (below video, collapsible, drag-resizable):
+      Drag handle at top edge (resize on mousedown+mousemove)
+      Tab bar: Overview · Buffer · Events · Markers · Manifest · Tracks · Network · Charts · Captions
+      Close [×] button
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ANALYZER TABS (renderer/analyzer.js)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. OVERVIEW — 4-card grid, polling every 500ms while playing:
+   Video card:    Codec, Resolution, Frame Rate, Video Bitrate, Container
+   Audio/Network: Codec, Audio Bitrate, Total Bitrate, ABR Estimate, Protocol
+   Playback:      Buffer Ahead, Stream Type, Live Latency, Playback Rate, Load Latency
+   Quality/DRM:   Decoded Frames, Dropped Frames, DRM System, Key Status, Stream URL
+
+2. BUFFER TIMELINE — canvas-drawn visual inspector:
+   Click-to-seek on timeline canvas
+   Colored regions: purple=buffered, red=gap, needle=playhead
+   Stats: Buffered seconds, Duration, Ranges count, Live Latency
+   Below canvas: text list of all TimeRanges
+
+3. EVENTS LOG — filterable table:
+   Columns: Time (relative ms), Event name, Detail
+   Filter by category: All / Player / Video / DRM / ABR / Network / Info
+   Clear button. Color-coded rows per category.
+   Auto-capture all shaka + HTMLVideoElement events with details.
+
+4. MARKERS — SCTE-35 / ad break / discontinuity inspector:
+   Live Ad Break Monitor panel (shown during active break):
+     Header: ● AD BREAK IN PROGRESS · break# tag · slot tag · segment type
+     Timer row: Elapsed / Total / Remaining + progress bar
+     Slot sequence pills (numbered ad slots in break)
+     Meta: UPID, Program ID, Scheme
+     Tracking URLs section
+   Summary pills: Ad Breaks count, Discontinuities, SCTE-35, Events, Schedule Gaps
+   Filter: All / Ad Out / Ad In / Discontinuity / SCTE-35 / DATERANGE / Event / Period / Schedule Gap
+   Table: Time · Type · Duration · Label · SCTE-35 data
+   Click row → seek to that position
+   Ad Session Log (scrollable log of completed/current breaks)
+
+5. MANIFEST — raw + parsed viewer:
+   Toolbar: ⟳ Fetch/Refresh · ⬇ All Children · child selector dropdown ·
+            ⊞ View All · ▶ Play All · 🏷 Tags
+   Two-pane layout:
+     Left: parsed tree (HLS segments/tags or DASH XML tree, color-coded)
+     Right: raw manifest text
+     Grid view mode (all child playlists in table)
+     Tags view (HLS tag catalogue grouped by category with descriptions)
+   Full HLS tag catalogue: Basic, Master Playlist, Media Playlist, Segment,
+     Segment/DRM, Low Latency, Metadata, Ad Markers, Custom tags
+   Multi-stream playback: play all child playlists simultaneously in grid overlay
+
+6. TRACKS — three tables:
+   Video Variants: active indicator, Resolution, FPS, Codec, Bitrate (kbps), HDR flag
+   Audio Tracks:   Language, Role, Label
+   Subtitle Tracks: active indicator, Language, Label, Kind
+
+7. NETWORK — request log table:
+   Columns: Time, Type (color-coded), URL (truncated), HTTP Status, Size, Duration
+   Filter by type: All / Manifest / Segment / License / Key / Timing / Cert
+   Clear button. Count badge.
+   Intercept via Shaka's network filters for all request/response pairs.
+
+8. CHARTS — 2×2 live sparkline grid (120s rolling window, canvas-drawn):
+   Bitrate (purple): selected variant bandwidth over time
+   Buffer Ahead (teal): seconds buffered ahead of playhead
+   Dropped Frames/s (red): decode overload indicator
+   Live Latency (orange): seconds behind live edge
+
+9. CAPTIONS / VTT — subtitle inspector:
+   Active Cue display: large text of current cue + timecode
+   Track selector dropdown (for streams with multiple subtitle tracks)
+   Split panel:
+     Left: Cue Timeline table (Start · End · Text), click → seek
+     Right: Raw VTT source text
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MULTI-STREAM PLAYBACK OVERLAY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Full-screen overlay grid of <video> elements (one per child playlist)
+Controls: ▶ Play All · ⏸ Pause All · 🔊 Unmute All · ⟳ Sync · ✕ Close
+Triggered from Manifest tab → "Play All" button
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONTAINER/CODEC INFO STRIP
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Thin bar below player, shown after load:
+  Format · Container · Video Codec · Audio Codec · Resolution · Total Bitrate
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STATUS BAR
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Left: status message (Ready / Loading / Playing / Error…)
+Right: "Widevine: found v4.x.x" or "not found" | "HEVC: supported" or "not supported"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ABOUT MODAL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Triggered by ? button. Shows: version, author, contact (clickable email),
+engine (Electron + Shaka 4.x), DRM (Widevine via Chromium EME),
+formats (HLS, MPEG-DASH, CMAF, HEVC, AV1, H.264).
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PLAYER LOGIC (renderer/player.js)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- Init Shaka Player on <video>, configure per UI settings
+- Codec preference: filter tracks based on HEVC/AV1/H.264 checkboxes
+- DRM config: populate Widevine licenseUri + licenseHeaders + server robustness
+  Send update-drm-config IPC whenever DRM settings change
+- Preset sentinel values trigger special config (e.g. __shaka_widevine__ fills in demo URL)
+- On load: show spinner, init player, track load time, populate quality/audio/text selects
+- Quality select: manual variant selection via player.selectVariantTrack()
+- Audio/text track selects: player.selectAudioLanguage() / selectTextTrack()
+- Live streams: show LIVE badge, disable seek bar, show live latency in status
+- Auto-hide controls: reset timer on mousemove, fade out after 2.5s idle
+- Keyboard shortcuts: Space (play/pause), M (mute), F (fullscreen), arrows (±10s seek)
+- Shaka error formatting: map error codes to human-readable names with data fields
+- VTT caption loading: player.addTextTrackAsync() or manual VTT fetch + TextTrack API
+- On stop: destroy player, reset UI, show idle overlay
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AD MARKERS (renderer/admarkers.js)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Parse HLS/DASH manifests client-side for:
+  EXT-X-CUE-OUT / EXT-X-CUE-IN / EXT-X-CUE-OUT-CONT
+  EXT-X-SCTE35 / EXT-X-OATCLS-SCTE35
+  EXT-X-DATERANGE
+  DASH EventStream / Event elements
+  DASH Period boundaries
+  EXT-X-DISCONTINUITY
+  EXT-X-GAP (schedule gap detection)
+Decode SCTE-35 base64 payloads: extract splice_insert, segmentation_descriptor,
+  UPID, program_id, segmentation_type, duration, avail_num, avails_expected
+Maintain marker list; expose to Markers tab
+Live ad break monitor: poll playhead position against marker timestamps
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FILE STRUCTURE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+hevc-player/
+├── main.js
+├── preload.js
+├── package.json
+├── scripts/
+│   └── prebuild.js         (copy shaka-player.compiled.js to renderer/)
+└── renderer/
+    ├── index.html
+    ├── styles.css
+    ├── player.js
+    ├── analyzer.js
+    ├── admarkers.js
+    └── shaka-player.compiled.js  (copied by prebuild)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STYLE REQUIREMENTS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- All dark: #0d0d0f base, #13131a panels, #1a1a2e cards
+- Accents: purple #6c63ff (primary), teal #4ecca3 (success), red #e05252 (error/danger),
+           orange #ffa033 (warning), blue #88aaff (info)
+- Inputs: dark bg, 1px solid #2a2a3a border, focus glow #6c63ff
+- Scrollbars: thin, dark, 4px wide
+- Controls bar: glassmorphism (backdrop-filter: blur), gradient fade from bottom
+- Badges: pill shape, color per status (green=active, red=off)
+- Charts: canvas-drawn sparklines with semi-transparent fill under line
+- No external CSS frameworks. No Google Fonts. No icon libraries.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECURITY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- Never eval() or innerHTML user-supplied stream URLs
+- Escape all user data before inserting into DOM (innerText or escaping function)
+- preload uses contextBridge only — no nodeIntegration in renderer
+- DRM headers sent via IPC to main process — never logged to console in production
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BUILD
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+npm start  → node scripts/prebuild.js && electron .
+npm run build → node scripts/prebuild.js && electron-builder --win
+prebuild.js copies shaka-player.compiled.js from node_modules/shaka-player/dist/

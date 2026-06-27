@@ -141,13 +141,22 @@ The **Source** panel includes 20+ preset streams across categories:
 
 ## Running
 
+### Development
 ```bash
-# Serve the renderer directory
-npm start
-# → http://localhost:8080
+npm run dev
+# → http://localhost:8080  (live-serve, no build step)
 ```
 
-Or open `renderer/index.html` directly in Chromium / Electron.
+Or open `renderer/index.html` directly in Chromium.
+
+### Production server
+```bash
+npm run build     # copies renderer/ → dist/
+npm start         # Node.js static server → http://localhost:8080
+PORT=3000 npm start  # custom port
+```
+
+`server.js` serves from `dist/` if it exists, otherwise falls back to `renderer/` directly.
 
 ---
 
